@@ -1,3 +1,3 @@
-target.app: apps/blinky
+target.app: apps/ble_adv
 target.bsp: hw/bsp/nrf52805
 target.build_profile: debug
