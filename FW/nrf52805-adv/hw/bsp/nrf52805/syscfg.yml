@@ -49,11 +49,13 @@ syscfg.vals:
     CONSOLE_INPUT: 0     # Optional: Disable input if not needed
     LOG_BACKEND_RTT: 1   # Enable RTT for log output
     LOG_BACKEND_UART: 0  # Disable UART logging
+    # CONSOLE_SEMIHOSTING: 1
 
     # Flasher parameters
+    MYNEWT_DOWNLOADER: openocd
+    MYNEWT_DEBUGGER: openocd
+    MYNEWT_DOWNLOADER_OPENOCD_CFG: nrf52swd.cfg
     MYNEWT_DOWNLOADER_MFG_IMAGE_FLASH_OFFSET: 0x0
-    PYOCD_TARGET: nrf52
-    JLINK_TARGET: nRF52805_xxAA
 
 syscfg.vals.BLE_CONTROLLER:
     TIMER_0: 0

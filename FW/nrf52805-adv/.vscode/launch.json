@@ -2,42 +2,30 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Boot (J-Link)",
+            "name": "Debug Boot",
             "type": "cortex-debug",
             "request": "launch",
-            "servertype": "jlink",
-            "device": "nRF52805_XXAA",
-            "interface": "swd",
-            "runToEntryPoint": "main",
+            "servertype": "openocd",
+            "gdbPath": "arm-none-eabi-gdb",
+            "configFiles": [ "hw/bsp/nrf52805/nrf52swd.cfg" ],
+            "runToEntryPoint": "mynewt_main",
             "executable": "bin/targets/nrf52_boot/app/@mcuboot/boot/mynewt/mynewt.elf",
             "svdFile": "repos/nordic-nrfx/mdk/nrf52805.svd",
-            // "rtos": "mynewt",
             "preLaunchTask": "Build boot",
-            "postLaunchCommands": [
-                "monitor reset halt",
-                "load",
-                "break main",
-                "continue"
-            ],
-            "cwd": "${workspaceFolder}",
-            "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+            "showDevDebugOutput": "parsed",
         },
         {
-            "name": "Debug App (J-Link)",
+            "name": "Debug App",
             "type": "cortex-debug",
             "request": "launch",
-            "servertype": "jlink",
-            "device": "nRF52805_XXAA",
-            "interface": "swd",
-            "runToEntryPoint": "main",
+            "servertype": "openocd",
+            "gdbPath": "arm-none-eabi-gdb",
+            "configFiles": [ "hw/bsp/nrf52805/nrf52swd.cfg" ],
+            "runToEntryPoint": "mynewt_main",
             "executable": "bin/targets/nrf52805_adv/app/apps/ble_adv/ble_adv.elf",
             "svdFile": "repos/nordic-nrfx/mdk/nrf52805.svd",
-            // "rtos": "mynewt",
             "preLaunchTask": "Build app",
-            "postLaunchCommands": [
-                "monitor reset halt",
-                "load"
-            ]
+            "showDevDebugOutput": "parsed",
         },
     ]
 }

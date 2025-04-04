@@ -29,7 +29,7 @@
  * Architecture is set by the BSP/MCU combination.
  */
 
-static const char *device_name = "Sensor Watch";
+static const char *device_name = "Sensor Watch F91-W";
 
 /* adv_event() calls advertise(), so forward declaration is required */
 static void ble_advertise(void);

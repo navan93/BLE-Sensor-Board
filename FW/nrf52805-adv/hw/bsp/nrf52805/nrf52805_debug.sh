@@ -19,18 +19,18 @@
 #  - NO_GDB set if we should not start gdb to debug
 #
 
-. $CORE_PATH/hw/scripts/jlink.sh
+. $CORE_PATH/hw/scripts/openocd.sh
 
 FILE_NAME=$BIN_BASENAME.elf
 
-if [ $# -gt 2 ]; then
-    SPLIT_ELF_NAME=$3.elf
-    # TODO -- this magic number 0x42000 is the location of the second image
-    # slot. we should either get this from a flash map file or somehow learn
-    # this from the image itself
-    EXTRA_GDB_CMDS="add-symbol-file $SPLIT_ELF_NAME 0x8000 -readnow"
-fi
+CFG="-f $BSP_PATH/nrf52swd.cfg"
 
-JLINK_DEV="nRF52"
+# Exit openocd when gdb detaches.
+EXTRA_JTAG_CMD="$EXTRA_JTAG_CMD; nrf52.cpu configure -event gdb-detach {if {[nrf52.cpu curstate] eq \"halted\"} resume;shutdown}"
 
-jlink_debug
+# Start RTT server
+# EXTRA_GDB_CMDS='monitor rtt setup 0x20000000 0x1000 "SEGGER RTT"; monitor rtt start; monitor rtt server start 5000 0; break main;'
+EXTRA_GDB_CMDS="monitor rtt setup 0x20000000 0x1000 \"SEGGER RTT\"\nmonitor rtt start\nmonitor rtt server start 5000 0"
+# EXTRA_GDB_CMDS="$EXTRA_GDB_CMDS\n break main\nlayout src\nc"
+RESET=1
+openocd_debug
