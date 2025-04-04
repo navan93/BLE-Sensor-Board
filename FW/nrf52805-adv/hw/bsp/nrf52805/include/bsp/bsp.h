@@ -20,12 +20,24 @@
 #ifndef H_BSP_
 #define H_BSP_
 
+#include <inttypes.h>
+
+#include "os/mynewt.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /** Defined in MCU linker script. */
 extern uint8_t _ram_start;
+
+/* Define special stackos sections */
+#define sec_data_core   __attribute__((section(".data.core")))
+#define sec_bss_core    __attribute__((section(".bss.core")))
+#define sec_bss_nz_core __attribute__((section(".bss.core.nz")))
+
+/* More convenient section placement macros. */
+#define bssnz_t         sec_bss_nz_core
 
 #define RAM_SIZE        0x6000
 

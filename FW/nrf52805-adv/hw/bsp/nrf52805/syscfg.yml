@@ -37,8 +37,27 @@ syscfg.vals:
 
     UART_0: 0
     MCU_DCDC_ENABLED: 0
+    MCU_LFCLK_SOURCE: LFSYNTH
 
     CONFIG_FCB_FLASH_AREA: FLASH_AREA_NFFS
     REBOOT_LOG_FLASH_AREA: FLASH_AREA_REBOOT_LOG
     NFFS_FLASH_AREA: FLASH_AREA_NFFS
     COREDUMP_FLASH_AREA: FLASH_AREA_REBOOT_LOG
+
+    CONSOLE_RTT: 1       # Enable RTT as console
+    CONSOLE_UART: 0      # Disable UART console
+    CONSOLE_INPUT: 0     # Optional: Disable input if not needed
+    LOG_BACKEND_RTT: 1   # Enable RTT for log output
+    LOG_BACKEND_UART: 0  # Disable UART logging
+
+    # Flasher parameters
+    MYNEWT_DOWNLOADER_MFG_IMAGE_FLASH_OFFSET: 0x0
+    PYOCD_TARGET: nrf52
+    JLINK_TARGET: nRF52805_xxAA
+
+syscfg.vals.BLE_CONTROLLER:
+    TIMER_0: 0
+    TIMER_5: 1
+    OS_CPUTIME_FREQ: 32768
+    OS_CPUTIME_TIMER_NUM: 5
+    BLE_LL_RFMGMT_ENABLE_TIME: 1500

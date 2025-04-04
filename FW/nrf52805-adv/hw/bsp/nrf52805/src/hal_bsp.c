@@ -1,13 +1,17 @@
-#include <inttypes.h>
+#include <stdint.h>
+#include <stddef.h>
 #include <assert.h>
-#include "syscfg/syscfg.h"
-#include "sysflash/sysflash.h"
-#include "hal/hal_system.h"
-#include "hal/hal_flash_int.h"
-#include "hal/hal_timer.h"
+#include "os/mynewt.h"
+#include "mynewt_cm.h"
+#include "nrfx.h"
+#include "flash_map/flash_map.h"
 #include "hal/hal_bsp.h"
-#include "os/os.h"
+#include "hal/hal_flash.h"
+#include "hal/hal_system.h"
+#include "mcu/nrf52_hal.h"
+#include "mcu/nrf52_periph.h"
 #include "bsp/bsp.h"
+#include "defs/sections.h"
 
 /** What memory to include in coredump. */
 static const struct hal_bsp_mem_dump dump_cfg[] = {
@@ -24,6 +28,11 @@ hal_bsp_core_dump(int *area_cnt)
     return dump_cfg;
 }
 
+int
+hal_bsp_power_state(int state)
+{
+    return (0);
+}
 /**
  * Retrieves the flash device with the specified ID.  Returns NULL if no such
  * device exists.
@@ -34,8 +43,7 @@ hal_bsp_flash_dev(uint8_t id)
     switch (id) {
     case 0:
         /* MCU internal flash. */
-        /* XXX: Return pointer to MCU's flash object. */
-        return NULL;
+        return &nrf52k_flash_dev;
 
     default:
         /* External flash.  Assume not present in this BSP. */
@@ -55,7 +63,17 @@ hal_bsp_flash_dev(uint8_t id)
 uint32_t
 hal_bsp_get_nvic_priority(int irq_num, uint32_t pri)
 {
-    return pri;
+    uint32_t cfg_pri;
+
+    switch (irq_num) {
+    /* Radio gets highest priority */
+    case RADIO_IRQn:
+        cfg_pri = 0;
+        break;
+    default:
+        cfg_pri = pri;
+    }
+    return cfg_pri;
 }
 
 void
@@ -68,15 +86,12 @@ hal_bsp_init(void)
     /* Make sure system clocks have started. */
     hal_system_clock_start();
 
-#if MYNEWT_VAL(TIMER_0)
-    rc = hal_timer_init(0, NULL);
-    assert(rc == 0);
-#endif
-
-#if (MYNEWT_VAL(OS_CPUTIME_TIMER_NUM) >= 0)
-    rc = os_cputime_init(MYNEWT_VAL(OS_CPUTIME_FREQ));
-    assert(rc == 0);
-#endif
-
     /* Initialize additional BSP peripherals here. */
+    nrf52_periph_create();
+}
+
+void
+hal_bsp_deinit(void)
+{
+    Cortex_DisableAll();
 }

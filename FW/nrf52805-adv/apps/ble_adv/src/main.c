@@ -29,7 +29,7 @@
  * Architecture is set by the BSP/MCU combination.
  */
 
-static const char *device_name = "Apache Mynewt";
+static const char *device_name = "Sensor Watch";
 
 /* adv_event() calls advertise(), so forward declaration is required */
 static void ble_advertise(void);

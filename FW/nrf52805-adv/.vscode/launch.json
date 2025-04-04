@@ -1,0 +1,43 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Boot (J-Link)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "servertype": "jlink",
+            "device": "nRF52805_XXAA",
+            "interface": "swd",
+            "runToEntryPoint": "main",
+            "executable": "bin/targets/nrf52_boot/app/@mcuboot/boot/mynewt/mynewt.elf",
+            "svdFile": "repos/nordic-nrfx/mdk/nrf52805.svd",
+            // "rtos": "mynewt",
+            "preLaunchTask": "Build boot",
+            "postLaunchCommands": [
+                "monitor reset halt",
+                "load",
+                "break main",
+                "continue"
+            ],
+            "cwd": "${workspaceFolder}",
+            "serverpath": "/usr/bin/JLinkGDBServerCLExe",
+        },
+        {
+            "name": "Debug App (J-Link)",
+            "type": "cortex-debug",
+            "request": "launch",
+            "servertype": "jlink",
+            "device": "nRF52805_XXAA",
+            "interface": "swd",
+            "runToEntryPoint": "main",
+            "executable": "bin/targets/nrf52805_adv/app/apps/ble_adv/ble_adv.elf",
+            "svdFile": "repos/nordic-nrfx/mdk/nrf52805.svd",
+            // "rtos": "mynewt",
+            "preLaunchTask": "Build app",
+            "postLaunchCommands": [
+                "monitor reset halt",
+                "load"
+            ]
+        },
+    ]
+}

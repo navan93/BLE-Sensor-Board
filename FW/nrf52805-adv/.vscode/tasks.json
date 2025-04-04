@@ -1,0 +1,75 @@
+{
+    "version": "2.0.0",
+    "echoCommand": true,
+    "tasks":[
+        {
+            "label": "Build boot",
+            "args": [
+                "build",
+                "nrf52_boot"
+            ],
+            "type": "shell",
+            "command": "newt",
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        },
+        {
+            "label": "Flash boot",
+            "args": [
+                "load",
+                "nrf52_boot"
+            ],
+            "type": "shell",
+            "command": "newt"
+        },
+        {
+            "label": "Build app",
+            "args": [
+                "build",
+                "nrf52805_adv"
+            ],
+            "type": "shell",
+            "command": "newt"
+        },
+        {
+            "label": "Flash app",
+            "args": [
+                "load",
+                "nrf52805_adv"
+            ],
+            "type": "shell",
+            "command": "newt"
+        },
+        {
+            "label": "Create app image",
+            "args": [
+                "create-image",
+                "nrf52805_adv",
+                "1.0.0"
+            ],
+            "type": "shell",
+            "command": "newt"
+        },
+        {
+            "label": "Reset Board",
+            "type": "shell",
+            "command": "JLinkExe -device nRF52805 -if SWD -speed 4000 -autoconnect 1 -commanderscript reset.jlink",
+            "problemMatcher": []
+        },
+        {
+            "label": "Build All",
+            "dependsOn": ["Build boot", "Build app", "Create app image"],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        },
+        {
+            "label": "Flash All",
+            "dependsOn": ["Flash boot", "Flash app"],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        }
+    ]
+}

@@ -31,6 +31,9 @@ It is configured in internal LDO regulator setup.
 The firmware for this board is based on the Apache Mynewt OS.
 
 ### Setup
+#### Toolchain
+Install arm-gcc from official ARM release https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
+#### Mynewt OS
 TBD
 
 ### Build
@@ -40,4 +43,6 @@ newt build
 ```
 
 ### Upload
-TBD
+```
+newt load nrf52_blinky
+```
