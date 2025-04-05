@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BLE Time Sync</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            margin: 50px;
+        }
+        button {
+            margin: 10px;
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        ul {
+            list-style: none;
+            padding: 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>BLE Time Sync</h1>
+    <p>Connected Device: <strong id="device-name">Not Connected</strong></p>
+    <p>Synced Time: <strong id="synced-time">--</strong></p>
+    <button onclick="scanDevices()">Scan for Devices</button>
+    <ul id="device-list"></ul>
+
+    <script>
+        let devices = [];
+
+        async function scanDevices() {
+            try {
+                console.log("Scanning for Bluetooth Devices...");
+                const device = await navigator.bluetooth.requestDevice({
+                    acceptAllDevices: true,
+                    optionalServices: ["00001805-0000-1000-8000-00805f9b34fb"] // Current Time Service
+                });
+                devices.push(device);
+                updateDeviceList();
+            } catch (error) {
+                console.error("Scan Error:", error);
+                alert("Failed to scan devices.");
+            }
+        }
+
+        function updateDeviceList() {
+            const list = document.getElementById("device-list");
+            list.innerHTML = "";
+            devices.forEach((device, index) => {
+                const listItem = document.createElement("li");
+                const button = document.createElement("button");
+                button.textContent = `Connect to ${device.name || "Unnamed Device"}`;
+                button.onclick = () => connectToDevice(device);
+                listItem.appendChild(button);
+                list.appendChild(listItem);
+            });
+        }
+
+        async function connectToDevice(device) {
+            try {
+                document.getElementById("device-name").textContent = device.name || "Unknown Device";
+                console.log("Connecting to GATT Server...");
+                const server = await device.gatt.connect();
+                const service = await server.getPrimaryService("00001805-0000-1000-8000-00805f9b34fb");
+                const characteristic = await service.getCharacteristic("00002A2B-0000-1000-8000-00805f9b34fb");
+
+                console.log("Reading time from BLE device...");
+                const value = await characteristic.readValue();
+
+                // Parse Current Time characteristic (little-endian format)
+                const year = value.getUint16(0, true);
+                const month = value.getUint8(2);
+                const day = value.getUint8(3);
+                const hours = value.getUint8(4);
+                const minutes = value.getUint8(5);
+                const seconds = value.getUint8(6);
+
+                const formattedTime = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+                document.getElementById("synced-time").textContent = formattedTime;
+                console.log("Synced Time:", formattedTime);
+            } catch (error) {
+                console.error("Connection Error:", error);
+                alert("Failed to connect. Make sure your BLE device is on.");
+            }
+        }
+    </script>
+</body>
+</html>
