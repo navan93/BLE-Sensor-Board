@@ -75,6 +75,8 @@ ble_advertise(void)
     memset(&adv_params, 0, sizeof(adv_params));
     adv_params.conn_mode = BLE_GAP_CONN_MODE_NON;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+    adv_params.itvl_min  = 2400; // 500ms / 0.625ms = 800
+    adv_params.itvl_max  = 4800;
 
     memset(&fields, 0, sizeof(fields));
 
