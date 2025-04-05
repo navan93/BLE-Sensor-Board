@@ -41,7 +41,11 @@
                 "nrf52805_adv"
             ],
             "type": "shell",
-            "command": "newt"
+            "command": "newt",
+            "dependsOn": [
+                "Create app image"
+            ],
+            "problemMatcher": []
         },
         {
             "label": "Create app image",
@@ -51,7 +55,10 @@
                 "1.0.0"
             ],
             "type": "shell",
-            "command": "newt"
+            "command": "newt",
+            "dependsOn": [
+                "Build app"
+            ]
         },
         {
             "label": "Reset Board",
@@ -61,13 +68,20 @@
         },
         {
             "label": "Build All",
-            "dependsOn": ["Build boot", "Build app", "Create app image"],
+            "dependsOn": [
+                "Build boot",
+                "Build app",
+                "Create app image"
+            ],
             "dependsOrder": "sequence",
             "problemMatcher": []
         },
         {
             "label": "Flash All",
-            "dependsOn": ["Flash boot", "Flash app"],
+            "dependsOn": [
+                "Flash boot",
+                "Flash app"
+            ],
             "dependsOrder": "sequence",
             "problemMatcher": []
         }

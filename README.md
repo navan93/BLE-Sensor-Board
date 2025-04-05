@@ -28,21 +28,31 @@ It is configured in internal LDO regulator setup.
 4. Wireless Button - TBD
 
 ## Firmware
-The firmware for this board is based on the Apache Mynewt OS.
+The firmware for this board is based on the [Apache Mynewt OS](https://mynewt.apache.org/).
 
 ### Setup
 #### Toolchain
-Install arm-gcc from official ARM release https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads
+Install latest arm-gcc from the official [ARM release](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads)
+
+#### Debugger
+Jlink, even a clone will do.
+
 #### Mynewt OS
-TBD
+```
+cd FW/nrf52805_adv
+newt upgrade
+```
+This step will take a bit of time as it pulls down the external repositories needed to build with Mynewt.
 
 ### Build
 ```
-cd FW
-newt build
+newt build nrf52_boot
+newt build nrf52805_adv
+newt create-image nrf52805_adv 1.0.0
 ```
 
 ### Upload
 ```
-newt load nrf52_blinky
+newt load nrf52_boot
+newt load nrf52805_adv
 ```
