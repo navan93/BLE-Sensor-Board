@@ -44,7 +44,7 @@ static int hid_notify_enabled;
 static void ble_advertise(void);
 static int gap_event(struct ble_gap_event *event, void *arg);
 static int hid_gatt_init(void);
-static void hid_send_test_key(void);
+static void hid_send_keycode(uint8_t keycode);
 static int hid_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                          struct ble_gatt_access_ctxt *ctxt, void *arg);
 
@@ -115,7 +115,9 @@ static const struct ble_gatt_svc_def hid_gatt_svcs[] = {
             {
                 .uuid = BLE_UUID16_DECLARE(0x2A4D), /* Input Report */
                 .access_cb = hid_access_cb,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                /* Require encryption to read the report value */
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC |
+                         BLE_GATT_CHR_F_NOTIFY,
                 .val_handle = &hid_input_report_handle,
             },
             {
@@ -203,8 +205,14 @@ hid_gatt_init(void)
     return 0;
 }
 
+/**
+ * Send a single HID keycode to the host.
+ * Sends a key press followed by a key release.
+ *
+ * @param keycode HID keycode to send (e.g., 0x04 for 'a')
+ */
 static void
-hid_send_test_key(void)
+hid_send_keycode(uint8_t keycode)
 {
     int rc;
     struct os_mbuf *om;
@@ -213,9 +221,9 @@ hid_send_test_key(void)
         return;
     }
 
-    /* Press 'a' (HID keycode 0x04) */
+    /* Press the key */
     memset(hid_input_report, 0, sizeof(hid_input_report));
-    hid_input_report[2] = 0x04;
+    hid_input_report[2] = keycode;
 
     om = ble_hs_mbuf_from_flat(hid_input_report, sizeof(hid_input_report));
     if (!om) {
@@ -229,7 +237,7 @@ hid_send_test_key(void)
         return;
     }
 
-    /* Then release all keys */
+    /* Release all keys */
     memset(hid_input_report, 0, sizeof(hid_input_report));
 
     om = ble_hs_mbuf_from_flat(hid_input_report, sizeof(hid_input_report));
@@ -272,7 +280,8 @@ gap_event(struct ble_gap_event *event, void *arg)
             hid_notify_enabled = event->subscribe.cur_notify;
             MODLOG_DFLT(INFO, "HID input notify=%d\n", hid_notify_enabled);
             if (hid_notify_enabled) {
-                hid_send_test_key();
+                /* Send 'a' keycode (0x04) as a demo */
+                hid_send_keycode(0x04);
             }
         }
         return 0;
