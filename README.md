@@ -38,9 +38,19 @@ Install latest arm-gcc from the official [ARM release](https://developer.arm.com
 Jlink, even a clone will do.
 
 #### Mynewt OS
+
+Install newt on MacOS
+```
+brew install go
+git clone https://github.com/apache/mynewt-newt.git
+cd mynewt-newt
+make build
+export PATH=$PWD/bin:$PATH
+```
+
 ```
 cd FW/nrf52805_adv
-newt upgrade
+newt upgrade --shallow=1
 ```
 This step will take a bit of time as it pulls down the external repositories needed to build with Mynewt.
 

@@ -1,0 +1,3 @@
+target.app: apps/blehid_demo
+target.bsp: hw/bsp/nrf52805
+target.build_profile: optimized
