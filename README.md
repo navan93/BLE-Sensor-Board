@@ -11,6 +11,10 @@ It is configured in internal LDO regulator setup.
 > The hardware is a bare minimum design which will make this work. For e.g the ANT pin is connected straight to a chip antenna, skipping all the filter/matching circuit, do not expect this to pass any certifications!!
 
 ## Pin Map
+This pin map defines the electrical interface between the BLE Sensor Board (nRF52805)
+and the Sensor Watch pins (A0–A4, SCL, SDA). The same mapping is also captured in
+`FW/nrf52805-adv/hw/bsp/nrf52805/include/bsp/bsp.h` for use by the firmware BSP.
+
 | **nRF Pin** | **Pin** | **Digital** | **Interrupt**   | **Analog**    | **I2C**             | **SPI**              | **UART**                 | **PWM**  | **Ext. Wake** |
 | :---------: | :-----: | :---------: | :-------------: | :-----------: | :-----------------: | :------------------: | :----------------------: | :------: | :-----------: |
 | **P0.04**   | **A0**  | PB04        | EIC/EXTINT\[4\] | ADC/AIN\[12\] | —                   | —                    | —                        | —        | —             |

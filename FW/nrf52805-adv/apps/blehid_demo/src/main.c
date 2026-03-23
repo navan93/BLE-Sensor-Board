@@ -34,6 +34,25 @@
 
 static const char *device_name = "Sensor Watch F91-W";
 
+/* HID keyboard modifier bits (byte 0 of report) */
+#define HID_MOD_LEFT_CTRL   (1 << 0)
+#define HID_MOD_LEFT_SHIFT  (1 << 1)
+#define HID_MOD_LEFT_ALT    (1 << 2)
+#define HID_MOD_LEFT_GUI    (1 << 3)  /* Windows/Command key */
+#define HID_MOD_RIGHT_CTRL  (1 << 4)
+#define HID_MOD_RIGHT_SHIFT (1 << 5)
+#define HID_MOD_RIGHT_ALT   (1 << 6)
+#define HID_MOD_RIGHT_GUI   (1 << 7)
+
+/**
+ * HID keyboard input structure.
+ * Represents a single HID keyboard report (up to 6 simultaneous keys + modifiers).
+ */
+struct hid_keyboard_input {
+    uint8_t modifiers;      /* Bitfield of HID_MOD_* flags */
+    uint8_t keycodes[6];    /* Up to 6 simultaneous keycodes */
+};
+
 /* HID keyboard state */
 static uint16_t hid_input_report_handle;
 static uint8_t hid_input_report[8];
@@ -44,7 +63,7 @@ static int hid_notify_enabled;
 static void ble_advertise(void);
 static int gap_event(struct ble_gap_event *event, void *arg);
 static int hid_gatt_init(void);
-static void hid_send_keycode(uint8_t keycode);
+static void hid_send_key(const struct hid_keyboard_input *input);
 static int hid_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                          struct ble_gatt_access_ctxt *ctxt, void *arg);
 
@@ -206,13 +225,26 @@ hid_gatt_init(void)
 }
 
 /**
- * Send a single HID keycode to the host.
+ * Send HID keyboard input to the host.
  * Sends a key press followed by a key release.
  *
- * @param keycode HID keycode to send (e.g., 0x04 for 'a')
+ * @param input Pointer to hid_keyboard_input structure containing modifiers and keycodes.
+ *              Can contain up to 6 simultaneous keycodes (for chords like Ctrl+Alt+Del).
+ *
+ * Example usage:
+ *   // Send 'a'
+ *   struct hid_keyboard_input key_a = { .modifiers = 0, .keycodes = {0x04} };
+ *   hid_send_key(&key_a);
+ *
+ *   // Send Ctrl+C
+ *   struct hid_keyboard_input ctrl_c = {
+ *       .modifiers = HID_MOD_LEFT_CTRL,
+ *       .keycodes = {0x06}  // 'c'
+ *   };
+ *   hid_send_key(&ctrl_c);
  */
 static void
-hid_send_keycode(uint8_t keycode)
+hid_send_key(const struct hid_keyboard_input *input)
 {
     int rc;
     struct os_mbuf *om;
@@ -221,9 +253,11 @@ hid_send_keycode(uint8_t keycode)
         return;
     }
 
-    /* Press the key */
+    /* Build and send key press report */
     memset(hid_input_report, 0, sizeof(hid_input_report));
-    hid_input_report[2] = keycode;
+    hid_input_report[0] = input->modifiers;
+    /* hid_input_report[1] is reserved (always 0) */
+    memcpy(&hid_input_report[2], input->keycodes, 6);
 
     om = ble_hs_mbuf_from_flat(hid_input_report, sizeof(hid_input_report));
     if (!om) {
@@ -237,7 +271,7 @@ hid_send_keycode(uint8_t keycode)
         return;
     }
 
-    /* Release all keys */
+    /* Send key release (all zeros) */
     memset(hid_input_report, 0, sizeof(hid_input_report));
 
     om = ble_hs_mbuf_from_flat(hid_input_report, sizeof(hid_input_report));
@@ -281,7 +315,11 @@ gap_event(struct ble_gap_event *event, void *arg)
             MODLOG_DFLT(INFO, "HID input notify=%d\n", hid_notify_enabled);
             if (hid_notify_enabled) {
                 /* Send 'a' keycode (0x04) as a demo */
-                hid_send_keycode(0x04);
+                struct hid_keyboard_input demo_key = {
+                    .modifiers = 0,
+                    .keycodes = {0x04}  /* 'a' */
+                };
+                hid_send_key(&demo_key);
             }
         }
         return 0;
