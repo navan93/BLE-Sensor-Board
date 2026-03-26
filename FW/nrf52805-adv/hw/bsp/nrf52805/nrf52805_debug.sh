@@ -30,7 +30,7 @@ EXTRA_JTAG_CMD="$EXTRA_JTAG_CMD; nrf52.cpu configure -event gdb-detach {if {[nrf
 
 # Start RTT server
 # EXTRA_GDB_CMDS='monitor rtt setup 0x20000000 0x1000 "SEGGER RTT"; monitor rtt start; monitor rtt server start 5000 0; break main;'
-EXTRA_GDB_CMDS="monitor rtt setup 0x20000000 0x1000 \"SEGGER RTT\"\nmonitor rtt start\nmonitor rtt server start 5000 0"
+EXTRA_GDB_CMDS="monitor rtt setup 0x20000000 0x6000 \"SEGGER RTT\"\nmonitor rtt start\nmonitor rtt server start 5000 0"
 # EXTRA_GDB_CMDS="$EXTRA_GDB_CMDS\n break main\nlayout src\nc"
 RESET=1
 openocd_debug

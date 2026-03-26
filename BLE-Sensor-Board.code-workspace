@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../Sensor-Watch"
+		},
+		{
+			"path": "../uf2-samdx1"
+		},
+		{
+			"path": "FW/nrf52805-adv"
+		}
+	],
+	"settings": {}
+}

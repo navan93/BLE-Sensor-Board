@@ -52,6 +52,12 @@ make build
 export PATH=$PWD/bin:$PATH
 ```
 
+Install ARM toolchain
+```
+brew install gcc-arm-embedded
+```
+
+Initialize the project
 ```
 cd FW/nrf52805_adv
 newt upgrade --shallow=1
@@ -63,10 +69,14 @@ This step will take a bit of time as it pulls down the external repositories nee
 newt build nrf52_boot
 newt build nrf52805_adv
 newt create-image nrf52805_adv 1.0.0
+
+newt build nrf52805_hid
+newt create-image nrf52805_hid 0.1.0
 ```
 
 ### Upload
 ```
 newt load nrf52_boot
 newt load nrf52805_adv
+newt load nrf52805_hid
 ```

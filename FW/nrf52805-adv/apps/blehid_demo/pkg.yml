@@ -30,6 +30,8 @@ pkg.deps:
     - "@apache-mynewt-core/sys/log"
     - "@apache-mynewt-core/sys/stats"
     - "@apache-mynewt-core/sys/log/modlog"
+    - "@apache-mynewt-core/sys/config"
+    - "@apache-mynewt-core/sys/flash_map"
     - "@apache-mynewt-nimble/nimble/host"
     - "@apache-mynewt-nimble/nimble/host/util"
     - "@apache-mynewt-nimble/nimble/host/services/gap"
