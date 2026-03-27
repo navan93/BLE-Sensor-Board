@@ -187,6 +187,7 @@ static void console_input_cb(struct os_event *ev);
 #define CMD_CLEAR_BONDS     0x03  /* value: (none)               */
 #define CMD_BLE_CTRL        0x04  /* value: [0x00=off, 0x01=on]  */
 #define CMD_PING            0x05  /* value: (none) — echoes ACK  */
+#define CMD_GET_TIME        0x06  /* value: (none) — reads CTS   */
 
 struct tlv_frame {
     uint8_t type;
@@ -1039,6 +1040,17 @@ uart_dispatch(const struct tlv_frame *f)
             /* BLE on: (re)start advertising */
             ble_advertise();
             MODLOG_DFLT(INFO, "BLE on\n");
+        }
+        break;
+
+    case CMD_GET_TIME:
+        if (ble_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
+            MODLOG_DFLT(INFO, "GET_TIME: not connected\n");
+        } else if (cts_chr_handle == 0) {
+            MODLOG_DFLT(INFO, "GET_TIME: CTS not discovered, retrying\n");
+            cts_discover(ble_conn_handle);
+        } else {
+            ble_gattc_read(ble_conn_handle, cts_chr_handle, cts_read_cb, NULL);
         }
         break;
 
