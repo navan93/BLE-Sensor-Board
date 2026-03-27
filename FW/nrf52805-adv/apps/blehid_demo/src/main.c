@@ -68,9 +68,6 @@
 					                    SCAN_CODE_POS)
 
 
-static const char *device_name = "Sensor Watch F91-W";
-
-
 /* HID keyboard modifier bits (byte 0 of report) */
 #define HID_MOD_LEFT_CTRL   (1 << 0)
 #define HID_MOD_LEFT_SHIFT  (1 << 1)
@@ -80,6 +77,8 @@ static const char *device_name = "Sensor Watch F91-W";
 #define HID_MOD_RIGHT_SHIFT (1 << 5)
 #define HID_MOD_RIGHT_ALT   (1 << 6)
 #define HID_MOD_RIGHT_GUI   (1 << 7)
+
+static const char *device_name = "Sensor Watch F91-W";
 
 /**
  * HID keyboard input structure.
@@ -92,16 +91,12 @@ struct hid_keyboard_input {
 
 /* HID keyboard state */
 static uint16_t hid_input_report_handle;
-static uint16_t hid_output_report_handle;
 static uint8_t hid_input_report[INPUT_REPORT_KEYS_MAX_LEN];
 static uint8_t hid_output_report;
 static uint8_t hid_protocol_mode = 0x01;
 static uint8_t hid_control_point;
 static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static int hid_notify_enabled;
-
-static const uint8_t hid_input_report_ref[] = { 0x01, 0x00 };
-// static const uint8_t hid_output_report_ref[] = { 0x02, 0x02 };
 
 /* Battery Service state */
 static uint8_t battery_level = 100; /* percentage */
@@ -116,6 +111,55 @@ static const uint8_t dis_pnp_id[] = {
     0x15, 0x19,       /* Vendor ID: 0x1915 (Nordic Semiconductor) LE */
     0xEF, 0xEE,       /* Product ID: 0x0001 LE */
     0x00, 0x01        /* Product Version: 0x0100 LE */
+};
+
+static const uint8_t hid_input_report_ref[] = { 0x00, 0x01 }; /* ID=0, Type=Input */
+static const uint8_t hid_external_report_ref[] = { 0x00, 0x00 };
+
+/* HID descriptors */
+static const uint8_t hid_info[] = {
+    0x11, 0x01, /* bcdHID (1.11) */
+    0x00,       /* bCountryCode (0 = not localized) */
+    0x02        /* flags: normally connectable */
+};
+
+/* Simple 8-byte keyboard report (modifiers + reserved + 6 keycodes) */
+static const uint8_t hid_report_map[] = {
+    0x05, 0x01,       /* Usage Page (Generic Desktop) */
+    0x09, 0x06,       /* Usage (Keyboard) */
+    0xA1, 0x01,       /* Collection (Application) */
+
+    /* ---- Input Report (ID = 1) ---- */
+#if INPUT_REP_KEYS_REF_ID
+		0x85, INPUT_REP_KEYS_REF_ID,    /*   Report ID (1) */
+#endif
+
+    /* Modifier byte */
+    0x05, 0x07,       /*   Usage Page (Key Codes) */
+    0x19, 0xE0,       /*   Usage Minimum (224 = Left Ctrl) */
+    0x29, 0xE7,       /*   Usage Maximum (231 = Right GUI) */
+    0x15, 0x00,       /*   Logical Minimum (0) */
+    0x25, 0x01,       /*   Logical Maximum (1) */
+    0x75, 0x01,       /*   Report Size (1) */
+    0x95, 0x08,       /*   Report Count (8) */
+    0x81, 0x02,       /*   Input (Data, Var, Abs) – modifier bits */
+
+    /* Reserved byte */
+    0x95, 0x01,       /*   Report Count (1) */
+    0x75, 0x08,       /*   Report Size (8) */
+    0x81, 0x01,       /*   Input (Const, Array, Abs) – reserved */
+
+    /* 6 Keycode bytes */
+    0x95, 0x06,       /*   Report Count (6) */
+    0x75, 0x08,       /*   Report Size (8) */
+    0x15, 0x00,       /*   Logical Minimum (0) */
+    0x25, 0x65,       /*   Logical Maximum (101) */
+    0x05, 0x07,       /*   Usage Page (Key Codes) */
+    0x19, 0x00,       /*   Usage Minimum (0) */
+    0x29, 0x65,       /*   Usage Maximum (101) */
+    0x81, 0x00,       /*   Input (Data, Array, Abs) – 6 keycodes */
+
+    0xC0              /* End Collection */
 };
 
 /* Characteristic User Description strings for DIS */
@@ -181,70 +225,6 @@ ascii_to_hid(char c, uint8_t *keycode, uint8_t *mod)
     return 0;
 }
 
-/* HID descriptors */
-static const uint8_t hid_info[] = {
-    0x01, 0x11, /* bcdHID (1.11) */
-    0x00,       /* bCountryCode (0 = not localized) */
-    0x02        /* flags: normally connectable */
-};
-
-/* Simple 8-byte keyboard report (modifiers + reserved + 6 keycodes) */
-static const uint8_t hid_report_map[] = {
-    0x05, 0x01,       /* Usage Page (Generic Desktop) */
-    0x09, 0x06,       /* Usage (Keyboard) */
-    0xA1, 0x01,       /* Collection (Application) */
-
-    /* ---- Input Report (ID = 1) ---- */
-#if INPUT_REP_KEYS_REF_ID
-		0x85, INPUT_REP_KEYS_REF_ID,    /*   Report ID (1) */
-#endif
-
-    /* Modifier byte */
-    0x05, 0x07,       /*   Usage Page (Key Codes) */
-    0x19, 0xE0,       /*   Usage Minimum (224 = Left Ctrl) */
-    0x29, 0xE7,       /*   Usage Maximum (231 = Right GUI) */
-    0x15, 0x00,       /*   Logical Minimum (0) */
-    0x25, 0x01,       /*   Logical Maximum (1) */
-    0x75, 0x01,       /*   Report Size (1) */
-    0x95, 0x08,       /*   Report Count (8) */
-    0x81, 0x02,       /*   Input (Data, Var, Abs) – modifier bits */
-
-    /* Reserved byte */
-    0x95, 0x01,       /*   Report Count (1) */
-    0x75, 0x08,       /*   Report Size (8) */
-    0x81, 0x01,       /*   Input (Const, Array, Abs) – reserved */
-
-    /* 6 Keycode bytes */
-    0x95, 0x06,       /*   Report Count (6) */
-    0x75, 0x08,       /*   Report Size (8) */
-    0x15, 0x00,       /*   Logical Minimum (0) */
-    0x25, 0x65,       /*   Logical Maximum (101) */
-    0x05, 0x07,       /*   Usage Page (Key Codes) */
-    0x19, 0x00,       /*   Usage Minimum (0) */
-    0x29, 0x65,       /*   Usage Maximum (101) */
-    0x81, 0x00,       /*   Input (Data, Array, Abs) – 6 keycodes */
-
-    /* ---- Output Report (ID = 2) ---- */
-#if OUTPUT_REP_KEYS_REF_ID
-	0x85, OUTPUT_REP_KEYS_REF_ID,   /*   Report ID (2) */
-#endif
-
-    /* 5 LED bits */
-    0x95, 0x05,       /*   Report Count (5) */
-    0x75, 0x01,       /*   Report Size (1) */
-    0x05, 0x08,       /*   Usage Page (LEDs) */
-    0x19, 0x01,       /*   Usage Minimum (Num Lock) */
-    0x29, 0x05,       /*   Usage Maximum (Kana) */
-    0x91, 0x02,       /*   Output (Data, Var, Abs) – LED bits */
-
-    /* 3 padding bits to fill the byte */
-    0x95, 0x01,       /*   Report Count (1) */
-    0x75, 0x03,       /*   Report Size (3) */
-    0x91, 0x01,       /*   Output (Const, Array, Abs) – padding */
-
-    0xC0              /* End Collection */
-};
-
 /* GATT service definitions: HID, DIS, and Battery */
 static const struct ble_gatt_svc_def hid_gatt_svcs[] = {
     { /*** HID Service (0x1812) ***/
@@ -269,6 +249,15 @@ static const struct ble_gatt_svc_def hid_gatt_svcs[] = {
             {
                 .uuid = BLE_UUID16_DECLARE(0x2A4B), /* Report Map */
                 .access_cb = hid_access_cb,
+                .descriptors = (struct ble_gatt_dsc_def[]) {
+                    {
+                        .uuid = BLE_UUID16_DECLARE(0x2907), /* HID Report Reference Descriptor */
+                        .att_flags = BLE_ATT_F_READ | BLE_ATT_F_READ_ENC,
+                        .access_cb = hid_access_cb,
+                        .arg = (void *)hid_external_report_ref,
+                    },
+                    { 0 }
+                },
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_READ_ENC,
             },
             {
@@ -285,27 +274,9 @@ static const struct ble_gatt_svc_def hid_gatt_svcs[] = {
                 },
                 .flags = BLE_GATT_CHR_F_READ   |
                          BLE_GATT_CHR_F_NOTIFY |
-                         BLE_GATT_CHR_F_WRITE,
+                         BLE_GATT_CHR_F_READ_ENC,
                 .val_handle = &hid_input_report_handle,
             },
-            // {
-            //     .uuid = BLE_UUID16_DECLARE(0x2A32), /* Output Report */
-            //     .access_cb = hid_access_cb,
-            //     .descriptors = (struct ble_gatt_dsc_def[]) {
-            //         {
-            //             .uuid = BLE_UUID16_DECLARE(0x2908), /* HID Report Reference Descriptor */
-            //             .att_flags = BLE_ATT_F_READ,
-            //             .access_cb = hid_access_cb,
-            //             .arg = (void *)hid_output_report_ref,
-            //         },
-            //         { 0 }
-            //     },
-            //     .flags = BLE_GATT_CHR_F_READ  |
-            //              BLE_GATT_CHR_F_WRITE |
-            //              BLE_GATT_CHR_F_WRITE_NO_RSP |
-            //              BLE_GATT_CHR_F_READ_ENC | BLE_GATT_CHR_F_WRITE_ENC,
-            //     .val_handle = &hid_output_report_handle,
-            // },
             { 0 }
         },
     },
@@ -437,13 +408,6 @@ hid_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                                     sizeof(hid_input_report));
                 return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
             }
-
-            if (attr_handle == hid_output_report_handle) {
-                rc = os_mbuf_append(ctxt->om, &hid_output_report,
-                                    sizeof(hid_output_report));
-                return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
-            }
-
             return BLE_ATT_ERR_UNLIKELY;
         default:
             return BLE_ATT_ERR_UNLIKELY;
@@ -451,7 +415,7 @@ hid_access_cb(uint16_t conn_handle, uint16_t attr_handle,
 
     case BLE_GATT_ACCESS_OP_READ_DSC:
         uuid16 = ble_uuid_u16(ctxt->dsc->uuid);
-        if (uuid16 == 0x2908 && arg != NULL) {
+        if ((uuid16 == 0x2908 || uuid16 == 0x2907) && arg != NULL) {
             rc = os_mbuf_append(ctxt->om, arg, 2);
             return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
         }
@@ -464,13 +428,6 @@ hid_access_cb(uint16_t conn_handle, uint16_t attr_handle,
             return hid_attr_write(ctxt->om, sizeof(hid_control_point),
                                   sizeof(hid_control_point),
                                   &hid_control_point, NULL);
-        case 0x2A4D:
-            if (attr_handle == hid_output_report_handle) {
-                return hid_attr_write(ctxt->om, sizeof(hid_output_report),
-                                      sizeof(hid_output_report),
-                                      &hid_output_report, NULL);
-            }
-            return BLE_ATT_ERR_UNLIKELY;
         case 0x2A4E: /* Protocol Mode */
             return hid_attr_write(ctxt->om, sizeof(hid_protocol_mode),
                                   sizeof(hid_protocol_mode),
@@ -760,7 +717,7 @@ ble_advertise(void)
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
 
     /* Appearance = Keyboard (0x03C1 = 961) — tells iOS this is a keyboard */
-    fields.appearance = 0xC103;
+    fields.appearance = 0x03C1;
     fields.appearance_is_present = 1;
 
     /* Advertise the HID service UUID (0x1812) so centrals can filter for HID */
@@ -860,8 +817,8 @@ main(int argc, char **argv)
     MODLOG_DFLT(INFO, "BLE HID keyboard demo\n");
 
     /* Clear any stale bonds from previous failed pairing attempts */
-    // ble_store_clear();
-    // MODLOG_DFLT(INFO, "Cleared bond store\n");
+    ble_store_clear();
+    MODLOG_DFLT(INFO, "Cleared bond store\n");
 
     /* Set up console input over RTT */
     console_event.ev_cb = console_input_cb;
