@@ -56,8 +56,7 @@ p0.21/nReset --> A4
 #define LED_2           (19)
 #define LED_BLINK_PIN   (LED_1)
 
-
-
+#define WAKEUP_PIN      (4)
 /* Put additional BSP definitions here. */
 
 #ifdef __cplusplus

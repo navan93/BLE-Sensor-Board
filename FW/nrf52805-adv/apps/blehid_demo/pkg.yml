@@ -36,3 +36,4 @@ pkg.deps:
     - "@apache-mynewt-nimble/nimble/host/util"
     - "@apache-mynewt-nimble/nimble/host/services/gap"
     - "@apache-mynewt-nimble/nimble/host/store/config"
+    - "@apache-mynewt-core/hw/drivers/uart/uart_hal"

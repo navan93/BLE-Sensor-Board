@@ -16,6 +16,7 @@
 #include "host/util/util.h"
 #include "services/gap/ble_svc_gap.h"
 #include "console/console.h"
+#include "uart/uart.h"
 
 /**
  * Depending on the type of package, there are different
@@ -98,6 +99,11 @@ static uint8_t hid_control_point;
 static uint16_t ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static int hid_notify_enabled;
 
+/* CTS (Current Time Service) client state */
+static const ble_uuid16_t cts_svc_uuid = BLE_UUID16_INIT(0x1805);
+static const ble_uuid16_t cts_chr_uuid = BLE_UUID16_INIT(0x2A2B);
+static uint16_t cts_chr_handle;
+
 /* Battery Service state */
 static uint8_t battery_level = 100; /* percentage */
 
@@ -172,8 +178,40 @@ static struct console_input console_buf;
 static struct os_event console_event;
 static void console_input_cb(struct os_event *ev);
 
+/* ---- UART TLV receiver ---- */
+#define TLV_MAX_VALUE_LEN   16
+
+/* Command types */
+#define CMD_SEND_KEY        0x01  /* value: [keycode, modifier]  */
+#define CMD_SEND_STRING     0x02  /* value: ASCII bytes          */
+#define CMD_CLEAR_BONDS     0x03  /* value: (none)               */
+#define CMD_BLE_CTRL        0x04  /* value: [0x00=off, 0x01=on]  */
+#define CMD_PING            0x05  /* value: (none) — echoes ACK  */
+
+struct tlv_frame {
+    uint8_t type;
+    uint8_t length;
+    uint8_t value[TLV_MAX_VALUE_LEN];
+};
+
+enum tlv_parse_state { TLV_TYPE, TLV_LENGTH, TLV_VALUE };
+
+static struct uart_dev     *uart_dev;
+static struct tlv_frame     tlv_rx;         /* filled by ISR  */
+static struct tlv_frame     tlv_pending;    /* ready for task */
+static uint8_t              tlv_idx;
+static enum tlv_parse_state tlv_state;
+static volatile bool        tlv_frame_ready;
+static struct os_event      uart_rx_event;
+
+/* TX: small buffer for outgoing response frames */
+static uint8_t              uart_tx_buf[8];
+static uint8_t              uart_tx_len;
+static volatile uint8_t     uart_tx_idx;
+
 /* Forward declarations */
 static void ble_advertise(void);
+static void cts_discover(uint16_t conn_handle);
 static int gap_event(struct ble_gap_event *event, void *arg);
 static int hid_gatt_init(void);
 static void hid_send_key(const struct hid_keyboard_input *input);
@@ -622,6 +660,84 @@ hid_send_key(const struct hid_keyboard_input *input)
     }
 }
 
+/* ---- CTS GATT client ---- */
+
+static int
+cts_read_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+            struct ble_gatt_attr *attr, void *arg)
+{
+    uint8_t buf[10];
+    uint16_t len = 0;
+    uint16_t year;
+
+    if (error->status != 0) {
+        MODLOG_DFLT(ERROR, "CTS read error; status=%d\n", error->status);
+        return 0;
+    }
+    if (OS_MBUF_PKTLEN(attr->om) < 7) {
+        MODLOG_DFLT(ERROR, "CTS: short response (%d B)\n",
+                    OS_MBUF_PKTLEN(attr->om));
+        return 0;
+    }
+
+    ble_hs_mbuf_to_flat(attr->om, buf, sizeof(buf), &len);
+    year = (uint16_t)(buf[0] | ((uint16_t)buf[1] << 8));
+    MODLOG_DFLT(INFO, "Current time: %04u-%02u-%02u %02u:%02u:%02u\n",
+                year, buf[2], buf[3], buf[4], buf[5], buf[6]);
+    return 0;
+}
+
+static int
+cts_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                const struct ble_gatt_chr *chr, void *arg)
+{
+    if (error->status == BLE_HS_EDONE) {
+        if (cts_chr_handle == 0) {
+            MODLOG_DFLT(INFO, "CTS: current time chr not found\n");
+        }
+        return 0;
+    }
+    if (error->status != 0) {
+        MODLOG_DFLT(ERROR, "CTS chr disc error; status=%d\n", error->status);
+        return 0;
+    }
+
+    cts_chr_handle = chr->val_handle;
+    MODLOG_DFLT(INFO, "CTS chr found; handle=%d — reading\n", cts_chr_handle);
+    ble_gattc_read(conn_handle, cts_chr_handle, cts_read_cb, NULL);
+    return 0;
+}
+
+static int
+cts_svc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                const struct ble_gatt_svc *svc, void *arg)
+{
+    if (error->status == BLE_HS_EDONE) {
+        return 0;
+    }
+    if (error->status != 0) {
+        MODLOG_DFLT(ERROR, "CTS svc disc error; status=%d\n", error->status);
+        return 0;
+    }
+
+    MODLOG_DFLT(INFO, "CTS svc found; start=%d end=%d\n",
+                svc->start_handle, svc->end_handle);
+    ble_gattc_disc_chrs_by_uuid(conn_handle,
+                                 svc->start_handle, svc->end_handle,
+                                 &cts_chr_uuid.u,
+                                 cts_chr_disc_cb, NULL);
+    return 0;
+}
+
+static void
+cts_discover(uint16_t conn_handle)
+{
+    cts_chr_handle = 0;
+    MODLOG_DFLT(INFO, "Starting CTS discovery\n");
+    ble_gattc_disc_svc_by_uuid(conn_handle, &cts_svc_uuid.u,
+                                cts_svc_disc_cb, NULL);
+}
+
 static int
 gap_event(struct ble_gap_event *event, void *arg)
 {
@@ -646,12 +762,16 @@ gap_event(struct ble_gap_event *event, void *arg)
                     event->disconnect.reason);
         ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         hid_notify_enabled = 0;
+        cts_chr_handle = 0;
         ble_advertise();
         return 0;
 
     case BLE_GAP_EVENT_ENC_CHANGE:
         MODLOG_DFLT(INFO, "Encryption change; status=%d\n",
                     event->enc_change.status);
+        if (event->enc_change.status == 0) {
+            cts_discover(event->enc_change.conn_handle);
+        }
         return 0;
 
     case BLE_GAP_EVENT_REPEAT_PAIRING: {
@@ -806,6 +926,166 @@ console_input_cb(struct os_event *ev)
     console_line_event_put(ev);
 }
 
+/* ISR: parse one incoming byte into the TLV state machine.
+ * Copies the completed frame to tlv_pending and posts an event. */
+static int
+uart_rx_char_cb(void *arg, uint8_t byte)
+{
+    switch (tlv_state) {
+    case TLV_TYPE:
+        tlv_rx.type = byte;
+        tlv_state = TLV_LENGTH;
+        return 0;
+
+    case TLV_LENGTH:
+        if (byte > TLV_MAX_VALUE_LEN) {
+            tlv_state = TLV_TYPE;   /* invalid length — reset */
+            return 0;
+        }
+        tlv_rx.length = byte;
+        tlv_idx = 0;
+        if (byte > 0) {
+            tlv_state = TLV_VALUE;
+            return 0;
+        }
+        /* zero-length frame — fall through to dispatch */
+        break;
+
+    case TLV_VALUE:
+        tlv_rx.value[tlv_idx++] = byte;
+        if (tlv_idx < tlv_rx.length) {
+            return 0;
+        }
+        break;
+    }
+
+    /* Frame complete */
+    tlv_pending = tlv_rx;
+    tlv_frame_ready = true;
+    tlv_state = TLV_TYPE;
+    if (!uart_rx_event.ev_queued) {
+        os_eventq_put(os_eventq_dflt_get(), &uart_rx_event);
+    }
+    return 0;
+}
+
+static int
+uart_tx_char_cb(void *arg)
+{
+    if (uart_tx_idx >= uart_tx_len) {
+        return -1;
+    }
+    return uart_tx_buf[uart_tx_idx++];
+}
+
+/* Queue a short response frame and trigger TX. */
+static void
+uart_tx_send(const uint8_t *data, uint8_t len)
+{
+    if (len > sizeof(uart_tx_buf)) {
+        return;
+    }
+    memcpy(uart_tx_buf, data, len);
+    uart_tx_len = len;
+    uart_tx_idx = 0;
+    uart_start_tx(uart_dev);
+}
+
+/* Task context: dispatch the completed TLV frame. */
+static void
+uart_dispatch(const struct tlv_frame *f)
+{
+    uint8_t keycode, mod;
+    int i;
+
+    switch (f->type) {
+    case CMD_SEND_KEY:
+        if (f->length >= 1) {
+            struct hid_keyboard_input key = {
+                .modifiers = (f->length >= 2) ? f->value[1] : 0,
+                .keycodes  = { f->value[0] }
+            };
+            hid_send_key(&key);
+        }
+        break;
+
+    case CMD_SEND_STRING:
+        for (i = 0; i < f->length; i++) {
+            if (ascii_to_hid((char)f->value[i], &keycode, &mod) == 0) {
+                struct hid_keyboard_input key = {
+                    .modifiers = mod,
+                    .keycodes  = { keycode }
+                };
+                hid_send_key(&key);
+                os_time_delay(os_time_ms_to_ticks32(20));
+            }
+        }
+        break;
+
+    case CMD_CLEAR_BONDS:
+        ble_store_clear();
+        MODLOG_DFLT(INFO, "Bonds cleared\n");
+        break;
+
+    case CMD_BLE_CTRL:
+        if (f->length >= 1 && f->value[0] == 0x00) {
+            /* BLE off: drop connection then stop advertising */
+            if (ble_conn_handle != BLE_HS_CONN_HANDLE_NONE) {
+                ble_gap_terminate(ble_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+            }
+            ble_gap_adv_stop();
+            MODLOG_DFLT(INFO, "BLE off\n");
+        } else {
+            /* BLE on: (re)start advertising */
+            ble_advertise();
+            MODLOG_DFLT(INFO, "BLE on\n");
+        }
+        break;
+
+    case CMD_PING: {
+        static const uint8_t ack[] = { CMD_PING, 0x01, 0xAC };
+        uart_tx_send(ack, sizeof(ack));
+        MODLOG_DFLT(INFO, "UART ping OK\n");
+        break;
+    }
+
+    default:
+        MODLOG_DFLT(INFO, "UART: unknown cmd 0x%02x\n", f->type);
+        break;
+    }
+}
+
+static void
+uart_rx_event_cb(struct os_event *ev)
+{
+    if (!tlv_frame_ready) {
+        return;
+    }
+    tlv_frame_ready = false;
+    uart_dispatch(&tlv_pending);
+}
+
+static void
+uart_init(void)
+{
+    struct uart_conf uc = {
+        .uc_speed    = 115200,
+        .uc_databits = 8,
+        .uc_stopbits = 1,
+        .uc_parity   = UART_PARITY_NONE,
+        .uc_flow_ctl = UART_FLOW_CTL_NONE,
+        .uc_tx_char  = uart_tx_char_cb,
+        .uc_rx_char  = uart_rx_char_cb,
+    };
+
+    uart_rx_event.ev_cb = uart_rx_event_cb;
+
+    uart_dev = (struct uart_dev *)os_dev_open("uart0", OS_TIMEOUT_NEVER, &uc);
+    assert(uart_dev != NULL);
+
+    MODLOG_DFLT(INFO, "UART TLV receiver ready (115200 8N1)\n");
+}
+
 int
 main(int argc, char **argv)
 {
@@ -852,6 +1132,8 @@ main(int argc, char **argv)
     /* Set GAP appearance to HID Keyboard (0x03C1 / 961) */
     rc = ble_svc_gap_device_appearance_set(961);
     assert(rc == 0);
+
+    uart_init();
 
     /* As the last thing, process events from default event queue. */
     while (1) {
