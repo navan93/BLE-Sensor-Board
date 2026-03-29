@@ -36,8 +36,8 @@ syscfg.vals:
     BOOTUTIL_OVERWRITE_ONLY: 1
 
     UART_0: 0
-    UART_0_PIN_RX: 18
-    UART_0_PIN_TX: 16
+    UART_0_PIN_RX: 12   # watch TX: A2/PB02 ↔ nRF P0.12 (nRF RX)
+    UART_0_PIN_TX: 16   # watch RX: A1/PB01 ↔ nRF P0.16 (nRF TX)
 
     MCU_DCDC_ENABLED: 0
     MCU_LFCLK_SOURCE: LFSYNTH

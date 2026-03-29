@@ -27,3 +27,5 @@ syscfg.vals:
   CONSOLE_RTT: 1
 
   LOG_IMPLEMENTATION: full
+
+  UART_0: 1
