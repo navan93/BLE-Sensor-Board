@@ -3,65 +3,172 @@
 #include "console/console.h"
 #include "log/log.h"
 #include "uart/uart.h"
+#include <string.h>
 
+/* ---- UART TLV receiver ---- */
+#define TLV_MAX_VALUE_LEN   16
 
-/* Define task stack and task object */
+/* Command types (watch → BLE board) */
+#define CMD_SEND_KEY        0x01  /* value: [keycode, modifier]  */
+#define CMD_SEND_STRING     0x02  /* value: ASCII bytes          */
+#define CMD_CLEAR_BONDS     0x03  /* value: (none)               */
+#define CMD_BLE_CTRL        0x04  /* value: [0x00=off, 0x01=on]  */
+#define CMD_PING            0x05  /* value: (none) — echoes ACK  */
+#define CMD_GET_TIME        0x06  /* value: (none) — reads CTS   */
+
+struct tlv_frame {
+    uint8_t type;
+    uint8_t length;
+    uint8_t value[TLV_MAX_VALUE_LEN];
+};
+
+enum tlv_parse_state { TLV_TYPE, TLV_LENGTH, TLV_VALUE };
+
+#define LOG_MODULE_MAIN (128)
+
+/* Task */
 #define MY_TASK_PRI         (1)
 #define MY_STACK_SIZE       (512)
 struct os_task my_task;
 os_stack_t my_task_stack[MY_STACK_SIZE];
 
-#define LOG_MODULE_MAIN (128)
+static struct uart_dev      *uart_dev;
+static struct tlv_frame      tlv_rx;          /* filled by ISR  */
+static struct tlv_frame      tlv_pending;     /* ready for task */
+static uint8_t               tlv_idx;
+static enum tlv_parse_state  tlv_state;
+static volatile bool         tlv_frame_ready;
+static struct os_event       uart_rx_event;
 
-static struct uart_dev *uart_dev;
-struct os_event rx_ev;
-/* Small ring buffer */
-static uint8_t g_tx_buf[64];
-static int g_tx_head, g_tx_tail;
+/* TX: small buffer for outgoing response frames */
+static uint8_t               uart_tx_buf[8];
+static uint8_t               uart_tx_len;
+static volatile uint8_t      uart_tx_idx;
 
-static void
-uart_console_rx_char_event(struct os_event *ev)
+/* ISR: parse one incoming byte into the TLV state machine */
+static int
+uart_rx_char_cb(void *arg, uint8_t byte)
 {
-    /* This is where we would process received UART data. For this example, we just log that we received something. */
-    if (g_tx_head == g_tx_tail) {
-        return;  /* No data */
+    switch (tlv_state) {
+    case TLV_TYPE:
+        tlv_rx.type = byte;
+        tlv_state = TLV_LENGTH;
+        return 0;
+
+    case TLV_LENGTH:
+        if (byte > TLV_MAX_VALUE_LEN) {
+            tlv_state = TLV_TYPE;   /* invalid length — reset */
+            return 0;
+        }
+        tlv_rx.length = byte;
+        tlv_idx = 0;
+        if (byte > 0) {
+            tlv_state = TLV_VALUE;
+            return 0;
+        }
+        /* zero-length frame — fall through to dispatch */
+        break;
+
+    case TLV_VALUE:
+        tlv_rx.value[tlv_idx++] = byte;
+        if (tlv_idx < tlv_rx.length) {
+            return 0;
+        }
+        break;
     }
-    uint8_t b = g_tx_buf[g_tx_tail];
-    g_tx_tail = (g_tx_tail + 1) % sizeof(g_tx_buf);
-    MODLOG_INFO(LOG_MODULE_MAIN, "Received a byte over UART: 0x%02X\n", b);
+
+    /* Frame complete */
+    tlv_pending = tlv_rx;
+    tlv_frame_ready = true;
+    tlv_state = TLV_TYPE;
+    if (!uart_rx_event.ev_queued) {
+        os_eventq_put(os_eventq_dflt_get(), &uart_rx_event);
+    }
+    return 0;
 }
 
 static int
 uart_tx_char_cb(void *arg)
 {
-    return -1; // No data to send
+    if (uart_tx_idx >= uart_tx_len) {
+        return -1;
+    }
+    return uart_tx_buf[uart_tx_idx++];
 }
 
-static int
-uart_rx_char_cb(void *arg, uint8_t byte)
+static void
+uart_tx_send(const uint8_t *data, uint8_t len)
 {
-    int next = (g_tx_head + 1) % sizeof(g_tx_buf);
-    // if (next == g_tx_tail) {
-    //     return -1;  /* TX buffer full — stall RX */
-    // }
-    g_tx_buf[g_tx_head] = byte;
-    g_tx_head = next;
-    /* This callback is called with interrupts disabled, so we should not do any
-     * heavy processing here. Instead, we can queue an event to process the
-     * received byte in a task context.
-     */
-    if (!rx_ev.ev_queued) {
-        os_eventq_put(os_eventq_dflt_get(), &rx_ev);
+    if (len > sizeof(uart_tx_buf)) {
+        return;
+    }
+    memcpy(uart_tx_buf, data, len);
+    uart_tx_len = len;
+    uart_tx_idx = 0;
+    uart_start_tx(uart_dev);
+}
+
+/* Task context: dispatch the completed TLV frame */
+static void
+uart_dispatch(const struct tlv_frame *f)
+{
+    switch (f->type) {
+    case CMD_SEND_KEY:
+        MODLOG_INFO(LOG_MODULE_MAIN,
+            "CMD_SEND_KEY: keycode=0x%02x modifier=0x%02x\n",
+            f->length >= 1 ? f->value[0] : 0,
+            f->length >= 2 ? f->value[1] : 0);
+        break;
+
+    case CMD_SEND_STRING:
+        MODLOG_INFO(LOG_MODULE_MAIN,
+            "CMD_SEND_STRING: len=%u\n", f->length);
+        break;
+
+    case CMD_CLEAR_BONDS:
+        MODLOG_INFO(LOG_MODULE_MAIN, "CMD_CLEAR_BONDS\n");
+        break;
+
+    case CMD_BLE_CTRL:
+        MODLOG_INFO(LOG_MODULE_MAIN,
+            "CMD_BLE_CTRL: %s\n",
+            (f->length >= 1 && f->value[0] == 0x00) ? "off" : "on");
+        break;
+
+    case CMD_PING: {
+        static const uint8_t ack[] = { CMD_PING, 0x01, 0xAC };
+        uart_tx_send(ack, sizeof(ack));
+        MODLOG_INFO(LOG_MODULE_MAIN, "CMD_PING -> ACK sent\n");
+        break;
     }
 
-    return 0;
+    case CMD_GET_TIME:
+        MODLOG_INFO(LOG_MODULE_MAIN, "CMD_GET_TIME\n");
+        break;
+
+    default:
+        MODLOG_INFO(LOG_MODULE_MAIN,
+            "UART: unknown cmd 0x%02x len=%u\n", f->type, f->length);
+        break;
+    }
+}
+
+static void
+uart_rx_event_cb(struct os_event *ev)
+{
+    MODLOG_INFO(LOG_MODULE_MAIN, "uart_rx_event_cb: event received\n");
+    if (!tlv_frame_ready) {
+        return;
+    }
+    tlv_frame_ready = false;
+    uart_dispatch(&tlv_pending);
 }
 
 static void
 uart_init(void)
 {
     struct uart_conf uc = {
-        .uc_speed    = 9600,
+        .uc_speed    = 115200,
         .uc_databits = 8,
         .uc_stopbits = 1,
         .uc_parity   = UART_PARITY_NONE,
@@ -70,8 +177,8 @@ uart_init(void)
         .uc_rx_char  = uart_rx_char_cb,
     };
 
-    /* Set up the event for UART RX */
-    rx_ev.ev_cb = uart_console_rx_char_event;
+    uart_rx_event.ev_cb = uart_rx_event_cb;
+    tlv_state = TLV_TYPE;
 
     uart_dev = (struct uart_dev *)os_dev_open("uart0", OS_TIMEOUT_NEVER, &uc);
     assert(uart_dev != NULL);
@@ -79,36 +186,25 @@ uart_init(void)
     MODLOG_INFO(LOG_MODULE_MAIN, "UART TLV receiver ready (115200 8N1)\n");
 }
 
-/* This is the task function */
 void my_task_func(void *arg) {
-
-    /* The task is a forever loop that does not return */
     while (1) {
-        /* Wait one second */
         os_time_delay(os_time_ms_to_ticks32(1000));
-        /* Print "Hello World!" to the console */
-        console_printf("Hello World!\n");
-        MODLOG_INFO(LOG_MODULE_MAIN, "Hello World!\n");
     }
 }
 
 int
 main(int argc, char **argv)
 {
-    /* Initialize all packages. */
     sysinit();
 
-    console_printf("Hello World Example Application\n");
-    MODLOG_INFO(LOG_MODULE_MAIN, "Hello World Example Application");
+    MODLOG_INFO(LOG_MODULE_MAIN, "TLV protocol test\n");
 
     uart_init();
 
-    /* Initialize the task */
     int rc = os_task_init(&my_task, "my_task", my_task_func, NULL, MY_TASK_PRI,
                  OS_WAIT_FOREVER, my_task_stack, MY_STACK_SIZE);
     assert(rc == 0);
 
-    /* As the last thing, process events from default event queue. */
     while (1) {
         os_eventq_run(os_eventq_dflt_get());
     }
