@@ -1,0 +1,3 @@
+target.app: apps/hello_world
+target.bsp: hw/bsp/nrf52805
+target.build_profile: debug
