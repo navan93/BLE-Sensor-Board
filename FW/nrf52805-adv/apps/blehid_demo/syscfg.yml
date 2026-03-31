@@ -27,14 +27,18 @@ syscfg.vals:
   BLE_LL_CFG_FEAT_LE_ENCRYPTION: 1
   BLE_EXT_ADV: 0
   BLE_VERSION: 52
-  CONSOLE_IMPLEMENTATION: stub
-  LOG_IMPLEMENTATION: stub
+  CONSOLE_IMPLEMENTATION: minimal
+  CONSOLE_UART: 0
+  CONSOLE_RTT: 1
+  LOG_IMPLEMENTATION: full
+  LOG_LEVEL: 0 # WARN
   STATS_IMPLEMENTATION: stub
   # Enable bonding + LE Secure Connections and persistent storage
   BLE_SM_BONDING: 1
   BLE_SM_SC: 1
   BLE_SM_LVL: 2 # allow to pair despite MITM being on or off
-
+  BLE_HS_LOG_LVL: 4 # CRITICAL, to reduce verbosity of NimBLE logs, if this is skipped, flash space overflows
+  BLE_EATT_LOG_LVL: 4
   # Use FCB in the BSP-defined FLASH_AREA_NFFS region for sys/config storage
   CONFIG_FCB: 1
   # Ensure NimBLE store/config persists bonds and CCCDs via sys/config

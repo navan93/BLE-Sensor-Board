@@ -1,34 +1,65 @@
-# UART Driver for Apache Mynewt
+# Apache Mynewt Driver & Logging Reference
 
-This package provides a unified UART driver framework for Apache Mynewt OS. It defines an abstract API that applications use for serial communication, backed by hardware-specific implementations.
+This document covers two packages used in Mynewt OS applications:
+- **UART Driver** (`hw/drivers/uart`) — serial communication with multiple hardware backends
+- **Modular Logging** (`sys/log/modlog`) — module-mapped, level-filtered logging
 
 ---
 
 ## Table of Contents
 
-- [Overview](#overview)
-- [Package Structure](#package-structure)
-- [Core API](#core-api)
-  - [Configuration](#configuration)
-  - [Callbacks](#callbacks)
-  - [Opening a UART Device](#opening-a-uart-device)
-  - [Transmitting Data](#transmitting-data)
-  - [Receiving Data](#receiving-data)
-  - [Flow Control](#flow-control)
-- [Backend Implementations](#backend-implementations)
-  - [uart_hal — Hardware UART via HAL](#uart_hal--hardware-uart-via-hal)
-  - [uart_bitbang — Software UART via GPIO Bitbanging](#uart_bitbang--software-uart-via-gpio-bitbanging)
-  - [uart_da1469x — DA1469x SoC UART](#uart_da1469x--da1469x-soc-uart)
-  - [max3107 — SPI-to-UART Bridge (MAX3107)](#max3107--spi-to-uart-bridge-max3107)
-- [Application Integration](#application-integration)
-  - [pkg.yml Dependencies](#pkgyml-dependencies)
-  - [syscfg.yml Configuration](#syscfgyml-configuration)
-  - [Full Example](#full-example)
-- [Interrupt Safety](#interrupt-safety)
+- [UART Driver](#uart-driver)
+  - [Overview](#overview)
+  - [Package Structure](#package-structure)
+  - [Core API](#core-api)
+    - [Configuration](#configuration)
+    - [Callbacks](#callbacks)
+    - [Opening a UART Device](#opening-a-uart-device)
+    - [Transmitting Data](#transmitting-data)
+    - [Receiving Data](#receiving-data)
+    - [Flow Control](#flow-control)
+  - [Backend Implementations](#backend-implementations)
+    - [uart_hal — Hardware UART via HAL](#uart_hal--hardware-uart-via-hal)
+    - [uart_bitbang — Software UART via GPIO Bitbanging](#uart_bitbang--software-uart-via-gpio-bitbanging)
+    - [uart_da1469x — DA1469x SoC UART](#uart_da1469x--da1469x-soc-uart)
+    - [max3107 — SPI-to-UART Bridge](#max3107--spi-to-uart-bridge)
+  - [Application Integration](#application-integration)
+    - [pkg.yml Dependencies](#pkgyml-dependencies)
+    - [syscfg.yml Configuration](#syscfgyml-configuration)
+    - [Full Example](#full-example)
+  - [Interrupt Safety](#interrupt-safety)
+- [Modular Logging (modlog)](#modular-logging-modlog)
+  - [Concepts](#concepts)
+  - [Core API](#core-api-1)
+    - [Data Structures](#data-structures)
+    - [Registration and Lifecycle](#registration-and-lifecycle)
+    - [Writing Log Entries](#writing-log-entries)
+    - [Macros](#macros)
+    - [Iteration](#iteration)
+  - [Configuration](#configuration-1)
+  - [Initialization](#initialization)
+  - [Application Integration](#application-integration-1)
+    - [pkg.yml Dependency](#pkgyml-dependency)
+    - [syscfg.yml Options](#syscfgyml-options)
+    - [Multiple Modules with Default Mapping](#multiple-modules-with-default-mapping)
+    - [Full Example](#full-example-1)
+  - [Advanced Patterns](#advanced-patterns)
+    - [Multiple Destinations per Module](#multiple-destinations-per-module)
+    - [Default Fallback Mapping](#default-fallback-mapping)
+    - [Per-Mapping Level Filtering](#per-mapping-level-filtering)
+    - [Dynamic Reconfiguration](#dynamic-reconfiguration)
+    - [Hex Dump Logging](#hex-dump-logging)
+  - [Thread Safety](#thread-safety)
+  - [Disabling Logging at Compile Time](#disabling-logging-at-compile-time)
+  - [Return Codes](#return-codes)
 
 ---
 
-## Overview
+## UART Driver
+
+This package provides a unified UART driver framework for Apache Mynewt OS. It defines an abstract API that applications use for serial communication, backed by hardware-specific implementations.
+
+### Overview
 
 The UART driver is built around a **callback-driven, interrupt-safe** model:
 
@@ -41,7 +72,7 @@ All callbacks are invoked from interrupt context (interrupts disabled), so they 
 
 ---
 
-## Package Structure
+### Package Structure
 
 ```
 hw/drivers/uart/
@@ -56,11 +87,11 @@ hw/drivers/uart/
 
 ---
 
-## Core API
+### Core API
 
 Header: `uart/uart.h`
 
-### Configuration
+#### Configuration
 
 ```c
 /* Parity options */
@@ -99,7 +130,7 @@ struct uart_conf {
 };
 ```
 
-### Callbacks
+#### Callbacks
 
 ```c
 /*
@@ -121,7 +152,7 @@ typedef void (*uart_tx_done)(void *arg);
 typedef int (*uart_rx_char)(void *arg, uint8_t byte);
 ```
 
-### Opening a UART Device
+#### Opening a UART Device
 
 ```c
 struct os_dev *uart_open(const char *name, struct uart_conf *conf);
@@ -162,7 +193,7 @@ void my_uart_init(void) {
 }
 ```
 
-### Transmitting Data
+#### Transmitting Data
 
 After queueing data into a buffer, notify the driver to start sending:
 
@@ -176,7 +207,7 @@ uart_blocking_tx(struct uart_dev *dev, uint8_t byte);
 
 A typical pattern is to maintain a small ring buffer. The `uc_tx_char` callback dequeues bytes one at a time; your application code enqueues bytes and calls `uart_start_tx()`.
 
-### Receiving Data
+#### Receiving Data
 
 Received bytes are delivered one at a time via the `uc_rx_char` callback. If the application cannot accept a byte (buffer full), return `-1` from the callback. The driver will stall RX and de-assert CTS (if hardware flow control is enabled).
 
@@ -186,7 +217,7 @@ When the application is ready to receive again:
 uart_start_rx(struct uart_dev *dev);
 ```
 
-### Flow Control
+#### Flow Control
 
 | Mode | Behavior |
 |------|----------|
@@ -197,13 +228,13 @@ Software-level stalling also works without hardware flow control: returning `-1`
 
 ---
 
-## Backend Implementations
+### Backend Implementations
 
 Choose the backend that matches your hardware by adding it as a dependency in `pkg.yml`.
 
 ---
 
-### `uart_hal` — Hardware UART via HAL
+#### `uart_hal` — Hardware UART via HAL
 
 **Package:** `hw/drivers/uart/uart_hal`
 
@@ -238,7 +269,7 @@ pkg.deps:
 
 ---
 
-### `uart_bitbang` — Software UART via GPIO Bitbanging
+#### `uart_bitbang` — Software UART via GPIO Bitbanging
 
 **Package:** `hw/drivers/uart/uart_bitbang`
 
@@ -285,7 +316,7 @@ pkg.deps:
 
 ---
 
-### `uart_da1469x` — DA1469x SoC UART
+#### `uart_da1469x` — DA1469x SoC UART
 
 **Package:** `hw/drivers/uart/uart_da1469x`
 
@@ -328,7 +359,7 @@ pkg.deps:
 
 ---
 
-### `max3107` — SPI-to-UART Bridge (MAX3107)
+#### `max3107` — SPI-to-UART Bridge
 
 **Package:** `hw/drivers/uart/max3107`
 
@@ -336,7 +367,7 @@ Driver for the Maxim MAX3107 external UART chip connected over SPI. Adds extra U
 
 This driver has its own read/write API in addition to exposing a standard `uart_dev` interface.
 
-#### syscfg.yml options
+**syscfg.yml options:**
 
 ```yaml
 syscfg.vals:
@@ -361,7 +392,7 @@ syscfg.vals:
     MAX3107_0_UART_TX_FIFO_LEVEL: 64   # TX trigger level (max 128)
 ```
 
-#### Using via standard UART API
+**Using via standard UART API:**
 
 When `MAX3107_0_NAME` is set to a valid device name (e.g. `"uart4"`), you can use it identically to any other UART device:
 
@@ -370,7 +401,7 @@ g_uart = (struct uart_dev *)uart_open("uart4", &conf);
 uart_start_tx(g_uart);
 ```
 
-#### Using via native MAX3107 API
+**Using via native MAX3107 API:**
 
 For direct FIFO access without the callback model:
 
@@ -422,9 +453,9 @@ pkg.deps:
 
 ---
 
-## Application Integration
+### Application Integration
 
-### pkg.yml Dependencies
+#### pkg.yml Dependencies
 
 Add one of the following to your application or BSP's `pkg.yml`:
 
@@ -441,13 +472,13 @@ pkg.deps:
     - hw/drivers/uart/max3107/max3107_0
 ```
 
-### syscfg.yml Configuration
+#### syscfg.yml Configuration
 
 Refer to the backend sections above. Most settings have sensible defaults. At minimum, configure:
 - Baud rate and pin assignments for your hardware
 - Device name(s) to match what your application calls `uart_open()` with
 
-### Full Example
+#### Full Example
 
 A minimal application that echoes received bytes back over UART:
 
@@ -522,7 +553,7 @@ int main(void) {
 
 ---
 
-## Interrupt Safety
+### Interrupt Safety
 
 All three callbacks (`uc_tx_char`, `uc_rx_char`, `uc_tx_done`) are invoked with **interrupts disabled** from the hardware ISR. Follow these rules inside callbacks:
 
@@ -533,40 +564,11 @@ All three callbacks (`uc_tx_char`, `uc_rx_char`, `uc_tx_done`) are invoked with 
 
 ---
 
-# Modular Logging (modlog) for Apache Mynewt
+## Modular Logging (modlog)
 
 `sys/log/modlog` provides a **module-mapped logging** layer that sits on top of Mynewt's core `log` infrastructure. Instead of writing directly to a `struct log`, application code logs by **module ID**. At runtime (or boot time), each module ID is mapped to one or more `struct log` destinations, with an independent minimum-level filter per mapping.
 
----
-
-## Table of Contents
-
-- [Concepts](#concepts)
-- [Core API](#core-api-1)
-  - [Data Structures](#data-structures)
-  - [Registration and Lifecycle](#registration-and-lifecycle)
-  - [Writing Log Entries](#writing-log-entries)
-  - [Macros](#macros)
-  - [Iteration](#iteration)
-- [Configuration](#configuration)
-- [Initialization](#initialization)
-- [Application Integration](#application-integration-1)
-  - [pkg.yml Dependency](#pkgyml-dependency)
-  - [syscfg.yml Options](#syscfgyml-options)
-  - [Usage Example](#usage-example)
-- [Advanced Patterns](#advanced-patterns)
-  - [Multiple Destinations per Module](#multiple-destinations-per-module)
-  - [Default Fallback Mapping](#default-fallback-mapping)
-  - [Per-Mapping Level Filtering](#per-mapping-level-filtering)
-  - [Dynamic Reconfiguration](#dynamic-reconfiguration)
-  - [Hex Dump Logging](#hex-dump-logging)
-- [Thread Safety](#thread-safety)
-- [Disabling Logging at Compile Time](#disabling-logging-at-compile-time)
-- [Return Codes](#return-codes)
-
----
-
-## Concepts
+### Concepts
 
 | Term | Meaning |
 |------|---------|
@@ -580,11 +582,11 @@ A single module ID can have multiple mappings (e.g. both a RAM circular buffer a
 
 ---
 
-## Core API
+### Core API
 
 Header: `modlog/modlog.h`
 
-### Data Structures
+#### Data Structures
 
 ```c
 /* Describes a single module → log mapping */
@@ -602,7 +604,7 @@ struct modlog_desc {
 typedef int modlog_foreach_fn(const struct modlog_desc *desc, void *arg);
 ```
 
-### Registration and Lifecycle
+#### Registration and Lifecycle
 
 ```c
 /*
@@ -636,7 +638,7 @@ int modlog_delete(uint8_t handle);
 void modlog_clear(void);
 ```
 
-### Writing Log Entries
+#### Writing Log Entries
 
 ```c
 /*
@@ -672,7 +674,7 @@ void modlog_hexdump(uint8_t module, uint8_t level,
                     const void *data, uint16_t len, uint16_t line_break);
 ```
 
-### Macros
+#### Macros
 
 The preferred way to log. All macros expand to no-ops when `LOG_FULL` is disabled or when the compile-time `LOG_LEVEL` is too low, incurring zero runtime cost.
 
@@ -700,7 +702,7 @@ MODLOG_DFLT(level, fmt, ...)
 MODLOG_HEXDUMP_DFLT(level, data_ptr, len, line_break)
 ```
 
-### Iteration
+#### Iteration
 
 ```c
 /*
@@ -713,7 +715,7 @@ int modlog_foreach(modlog_foreach_fn *fn, void *arg);
 
 ---
 
-## Configuration
+### Configuration
 
 All options are in `sys/log/modlog/syscfg.yml`:
 
@@ -727,7 +729,7 @@ All options are in `sys/log/modlog/syscfg.yml`:
 
 ---
 
-## Initialization
+### Initialization
 
 modlog initializes itself automatically via the Mynewt sysinit mechanism — no explicit call is needed in application code.
 
@@ -744,16 +746,16 @@ At init time (`modlog_init()`):
 
 ---
 
-## Application Integration
+### Application Integration
 
-### pkg.yml Dependency
+#### pkg.yml Dependency
 
 ```yaml
 pkg.deps:
     - sys/log/modlog
 ```
 
-### syscfg.yml Options
+#### syscfg.yml Options
 
 ```yaml
 syscfg.vals:
@@ -764,15 +766,71 @@ syscfg.vals:
     MODLOG_SYSINIT_STAGE: 100
 ```
 
-### Usage Example
+#### Multiple Modules with Default Mapping
+
+The simplest way to add per-subsystem logging to `main.c` is to define module ID constants and use them directly in the macros. With `MODLOG_CONSOLE_DFLT=1` (the default), all modules that have no explicit registration automatically route to the console — no setup code required.
+
+```c
+#include <modlog/modlog.h>
+
+/* Define module IDs for each subsystem — any values 0-254 */
+#define MOD_MAIN    1
+#define MOD_SENSOR  2
+#define MOD_BLE     3
+
+int main(void) {
+    sysinit();
+
+    MODLOG_INFO(MOD_MAIN, "App started");
+
+    sensor_init();
+    ble_init();
+
+    while (1) {
+        os_eventq_run(os_eventq_dflt_get());
+    }
+}
+
+void sensor_init(void) {
+    MODLOG_DEBUG(MOD_SENSOR, "Sensor init");
+    MODLOG_INFO(MOD_SENSOR, "Sensor ready");
+}
+
+void ble_init(void) {
+    MODLOG_DEBUG(MOD_BLE, "BLE init");
+    MODLOG_INFO(MOD_BLE, "BLE ready");
+}
+```
+
+All three modules fall through to the default console mapping. The module ID is embedded in each log entry so entries from different subsystems can be distinguished.
+
+To give **one specific module** a different log level while leaving all others on the default, register only that one explicitly:
+
+```c
+/* BLE logs at DEBUG; all other modules stay at the default console level */
+modlog_register(MOD_BLE, log_console_get(), LOG_LEVEL_DEBUG, NULL);
+```
+
+Modules with an explicit registration use that mapping. Modules without one continue to fall back to the default.
+
+Available level constants, from least to most severe:
+
+| Constant | Value |
+|----------|-------|
+| `LOG_LEVEL_DEBUG` | 0 |
+| `LOG_LEVEL_INFO` | 1 |
+| `LOG_LEVEL_WARN` | 2 |
+| `LOG_LEVEL_ERROR` | 3 |
+| `LOG_LEVEL_CRITICAL` | 4 |
+
+#### Full Example
 
 ```c
 #include <modlog/modlog.h>
 #include <log/log.h>
 
-/* Define module IDs for your subsystems */
-#define LOG_MODULE_SENSOR   1
-#define LOG_MODULE_COMM     2
+#define MOD_SENSOR  1
+#define MOD_COMM    2
 
 /* A log object backed by a circular buffer in RAM */
 static struct log g_sensor_log;
@@ -782,12 +840,11 @@ void app_log_init(void) {
     log_register("sensor", &g_sensor_log, &log_cbmem_handler,
                  &g_cbmem, LOG_SYSLEVEL);
 
-    /* Map module 1 to g_sensor_log, passing DEBUG and above */
-    modlog_register(LOG_MODULE_SENSOR, &g_sensor_log,
-                    LOG_LEVEL_DEBUG, NULL);
+    /* Map MOD_SENSOR to g_sensor_log, passing DEBUG and above */
+    modlog_register(MOD_SENSOR, &g_sensor_log, LOG_LEVEL_DEBUG, NULL);
 
     /*
-     * Module 2 has no explicit mapping, so it falls back to the
+     * MOD_COMM has no explicit mapping, so it falls back to the
      * default console mapping registered by MODLOG_CONSOLE_DFLT.
      */
 }
@@ -795,42 +852,42 @@ void app_log_init(void) {
 void sensor_read(void) {
     int value = read_adc();
 
-    MODLOG_DEBUG(LOG_MODULE_SENSOR, "ADC raw = %d", value);
+    MODLOG_DEBUG(MOD_SENSOR, "ADC raw = %d", value);
 
     if (value < 0) {
-        MODLOG_ERROR(LOG_MODULE_SENSOR, "ADC read failed: %d", value);
+        MODLOG_ERROR(MOD_SENSOR, "ADC read failed: %d", value);
     }
 }
 
 void comm_send(const uint8_t *pkt, uint16_t len) {
     /* No explicit mapping — goes to console via default */
-    MODLOG_INFO(LOG_MODULE_COMM, "TX %u bytes", len);
-    MODLOG_HEXDUMP_DEBUG(LOG_MODULE_COMM, pkt, len, 16);
+    MODLOG_INFO(MOD_COMM, "TX %u bytes", len);
+    MODLOG_HEXDUMP_DEBUG(MOD_COMM, pkt, len, 16);
 }
 ```
 
 ---
 
-## Advanced Patterns
+### Advanced Patterns
 
-### Multiple Destinations per Module
+#### Multiple Destinations per Module
 
 A single module can fan out to multiple log backends simultaneously:
 
 ```c
 uint8_t h_ram, h_uart;
 
-modlog_register(LOG_MODULE_SENSOR, &g_ram_log,  LOG_LEVEL_DEBUG, &h_ram);
-modlog_register(LOG_MODULE_SENSOR, &g_uart_log, LOG_LEVEL_WARN,  &h_uart);
+modlog_register(MOD_SENSOR, &g_ram_log,  LOG_LEVEL_DEBUG, &h_ram);
+modlog_register(MOD_SENSOR, &g_uart_log, LOG_LEVEL_WARN,  &h_uart);
 
-/* This single call writes to both logs.
+/* One write hits both logs.
  * g_ram_log receives DEBUG and above.
  * g_uart_log receives WARN and above only. */
-MODLOG_DEBUG(LOG_MODULE_SENSOR, "verbose trace");  /* → ram only */
-MODLOG_WARN(LOG_MODULE_SENSOR,  "something wrong"); /* → ram + uart */
+MODLOG_DEBUG(MOD_SENSOR, "verbose trace");   /* → ram only */
+MODLOG_WARN(MOD_SENSOR,  "something wrong"); /* → ram + uart */
 ```
 
-### Default Fallback Mapping
+#### Default Fallback Mapping
 
 Any module without an explicit mapping routes to all default mappings:
 
@@ -839,12 +896,12 @@ Any module without an explicit mapping routes to all default mappings:
 modlog_register(MODLOG_MODULE_DFLT, log_console_get(),
                 LOG_LEVEL_INFO, NULL);
 
-/* Both of these go to the console (assuming no explicit mapping for 42 or 99) */
+/* Both go to the console (no explicit mapping for 42 or 99) */
 MODLOG_INFO(42, "from module 42");
 MODLOG_INFO(99, "from module 99");
 ```
 
-### Per-Mapping Level Filtering
+#### Per-Mapping Level Filtering
 
 ```c
 /* Only forward WARN and above to the UART log */
@@ -854,7 +911,7 @@ MODLOG_DEBUG(MY_MODULE, "dropped silently");  /* below WARN — discarded */
 MODLOG_WARN(MY_MODULE,  "forwarded");         /* at or above WARN — written */
 ```
 
-### Dynamic Reconfiguration
+#### Dynamic Reconfiguration
 
 Mappings can be added, removed, or replaced at runtime:
 
@@ -869,7 +926,7 @@ modlog_register(MY_MODULE, &g_new_log, LOG_LEVEL_ERROR, &new_handle);
 modlog_clear();
 ```
 
-### Hex Dump Logging
+#### Hex Dump Logging
 
 ```c
 uint8_t packet[32] = { /* ... */ };
@@ -883,7 +940,7 @@ modlog_hexdump(MY_MODULE, LOG_LEVEL_INFO, packet, sizeof(packet), 8);
 
 ---
 
-## Thread Safety
+### Thread Safety
 
 All modlog operations are protected by an internal read-write lock:
 
@@ -894,7 +951,7 @@ It is safe to call `modlog_append` / macros concurrently from multiple tasks or 
 
 ---
 
-## Disabling Logging at Compile Time
+### Disabling Logging at Compile Time
 
 All modlog code is guarded by `#if MYNEWT_VAL(LOG_FULL)`. When `LOG_FULL` is disabled (e.g. for minimal production builds):
 
@@ -907,7 +964,7 @@ This means logging calls can be left in application code with zero runtime overh
 
 ---
 
-## Return Codes
+### Return Codes
 
 | Code | Meaning |
 |------|---------|

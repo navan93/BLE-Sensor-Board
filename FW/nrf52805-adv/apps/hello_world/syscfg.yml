@@ -22,7 +22,7 @@ syscfg.defs:
 
 # Settings this app overrides.
 syscfg.vals:
-  CONSOLE_IMPLEMENTATION: full
+  CONSOLE_IMPLEMENTATION: minimal
   CONSOLE_UART: 0
   CONSOLE_RTT: 1
 
