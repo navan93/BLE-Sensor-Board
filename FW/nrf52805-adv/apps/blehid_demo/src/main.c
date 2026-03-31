@@ -18,6 +18,12 @@
 #include "console/console.h"
 #include "uart/uart.h"
 
+#include <modlog/modlog.h>
+
+/* Define module IDs — pick any values 0-254 */
+#define MOD_MAIN    1
+#define MOD_BLE     2
+
 /**
  * Depending on the type of package, there are different
  * compilation rules for this directory.  This comment applies
@@ -81,6 +87,19 @@
 
 static const char *device_name = "Sensor Watch F91-W";
 
+/* Taken from Sensor-Watch/watch-library/shared/watch/watch_rtc.h */
+typedef union {
+    struct {
+        uint32_t second : 6;    // 0-59
+        uint32_t minute : 6;    // 0-59
+        uint32_t hour : 5;      // 0-23
+        uint32_t day : 5;       // 1-31
+        uint32_t month : 4;     // 1-12
+        uint32_t year : 6;      // 0-63 (representing 2020-2083)
+    } unit;
+    uint32_t reg;               // the bit-packed value as expected by the RTC peripheral's CLOCK register.
+} watch_date_time;
+
 /**
  * HID keyboard input structure.
  * Represents a single HID keyboard report (up to 6 simultaneous keys + modifiers).
@@ -101,8 +120,8 @@ static int hid_notify_enabled;
 
 /* CTS (Current Time Service) client state */
 static const ble_uuid16_t cts_svc_uuid = BLE_UUID16_INIT(0x1805);
-static const ble_uuid16_t cts_chr_uuid = BLE_UUID16_INIT(0x2A2B);
-static uint16_t cts_chr_handle;
+static uint16_t cts_chr_handle;  /* Current Time characteristic handle */
+static uint16_t lti_chr_handle;  /* Local Time Information characteristic handle */
 
 /* Battery Service state */
 static uint8_t battery_level = 100; /* percentage */
@@ -173,11 +192,6 @@ static const char dis_mfr_name_dsc[]  = "Manufacturer Name String";
 static const char dis_model_num_dsc[] = "Model Number String";
 static const char dis_pnp_id_dsc[]    = "PnP ID";
 
-/* Console input state */
-static struct console_input console_buf;
-static struct os_event console_event;
-static void console_input_cb(struct os_event *ev);
-
 /* ---- UART TLV receiver ---- */
 #define TLV_MAX_VALUE_LEN   16
 
@@ -188,6 +202,7 @@ static void console_input_cb(struct os_event *ev);
 #define CMD_BLE_CTRL        0x04  /* value: [0x00=off, 0x01=on]  */
 #define CMD_PING            0x05  /* value: (none) — echoes ACK  */
 #define CMD_GET_TIME        0x06  /* value: (none) — reads CTS   */
+#define CMD_ECHO            0x07  /* value: (none) — for testing */
 
 struct tlv_frame {
     uint8_t type;
@@ -205,8 +220,21 @@ static enum tlv_parse_state tlv_state;
 static volatile bool        tlv_frame_ready;
 static struct os_event      uart_rx_event;
 
-/* TX: small buffer for outgoing response frames */
-static uint8_t              uart_tx_buf[8];
+/* Local Time Information structure */
+typedef struct {
+    int8_t  time_zone;      /* Offset from UTC in 15-minute intervals (-48 to +56) */
+    uint8_t dst_offset;     /* DST offset in 15-minute intervals (0 = no DST) */
+} cts_local_time_info_t;
+
+/* CTS events and state */
+static struct os_event      cts_current_time_event;  /* Posted when current time read completes */
+static struct os_event      cts_resp_event;          /* Posted when all reads complete, triggers UART response */
+static volatile watch_date_time cts_date_time;
+static volatile cts_local_time_info_t cts_local_time_info;
+static volatile uint16_t    cts_read_conn_handle;    /* Connection handle for sequential reads */
+
+/* TX: small buffer for outgoing response frames (type + len + up to 14 bytes payload) */
+static uint8_t              uart_tx_buf[16];
 static uint8_t              uart_tx_len;
 static volatile uint8_t     uart_tx_idx;
 
@@ -224,8 +252,6 @@ static int dis_dsc_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                              struct ble_gatt_access_ctxt *ctxt, void *arg);
 static int bas_access_cb(uint16_t conn_handle, uint16_t attr_handle,
                          struct ble_gatt_access_ctxt *ctxt, void *arg);
-static void gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt,
-                                 void *arg);
 
 /**
  * Convert an ASCII character to a HID keycode + modifier.
@@ -389,12 +415,18 @@ set_ble_addr(void)
     int rc;
     ble_addr_t addr;
 
-    /* Generate a static random address (type 0).
-     * NRPA (type 1) changes every boot and breaks bonding. */
-    rc = ble_hs_id_gen_rnd(0, &addr);
-    assert(rc == 0);
+    /* Use the factory-programmed FICR device address so the address is
+     * stable across reboots and reflashes — the phone's bond entry stays
+     * valid.  gen_rnd() draws from the RNG each boot, which breaks bonding.
+     *
+     * nRF52 FICR DEVICEADDR[0] @ 0x10000060: lower 32 bits of 48-bit addr
+     * nRF52 FICR DEVICEADDR[1] @ 0x10000064: upper 16 bits in bits [15:0]
+     * BT spec requires bits [47:46] == 0b11 for a valid static random addr. */
+    const uint32_t *ficr_addr = (const uint32_t *)0x10000060UL;
+    addr.type = BLE_ADDR_RANDOM;
+    memcpy(addr.val, ficr_addr, 6);
+    addr.val[5] |= 0xC0; /* force static random MSBs */
 
-    /* set generated address */
     rc = ble_hs_id_set_rnd(addr.val);
     assert(rc == 0);
 }
@@ -540,38 +572,6 @@ bas_access_cb(uint16_t conn_handle, uint16_t attr_handle,
 }
 
 
-static void
-gatt_svr_register_cb(struct ble_gatt_register_ctxt *ctxt, void *arg)
-{
-    char buf[BLE_UUID_STR_LEN];
-
-    switch (ctxt->op) {
-    case BLE_GATT_REGISTER_OP_SVC:
-        MODLOG_DFLT(DEBUG, "registered service %s with handle=%d\n",
-                    ble_uuid_to_str(ctxt->svc.svc_def->uuid, buf),
-                    ctxt->svc.handle);
-        break;
-
-    case BLE_GATT_REGISTER_OP_CHR:
-        MODLOG_DFLT(DEBUG, "registering characteristic %s with "
-                           "def_handle=%d val_handle=%d\n",
-                    ble_uuid_to_str(ctxt->chr.chr_def->uuid, buf),
-                    ctxt->chr.def_handle,
-                    ctxt->chr.val_handle);
-        break;
-
-    case BLE_GATT_REGISTER_OP_DSC:
-        MODLOG_DFLT(DEBUG, "registering descriptor %s with handle=%d\n",
-                    ble_uuid_to_str(ctxt->dsc.dsc_def->uuid, buf),
-                    ctxt->dsc.handle);
-        break;
-
-    default:
-        assert(0);
-        break;
-    }
-}
-
 static int
 hid_gatt_init(void)
 {
@@ -633,13 +633,13 @@ hid_send_key(const struct hid_keyboard_input *input)
 
     om = ble_hs_mbuf_from_flat(hid_input_report, sizeof(hid_input_report));
     if (!om) {
-        MODLOG_DFLT(ERROR, "Failed to alloc mbuf for key press\n");
+        MODLOG(ERROR, MOD_BLE, "Failed to alloc mbuf for key press\n");
         return;
     }
 
     rc = ble_gatts_notify_custom(ble_conn_handle, hid_input_report_handle, om);
     if (rc != 0) {
-        MODLOG_DFLT(ERROR, "Failed to send key press; rc=%d\n", rc);
+        MODLOG(ERROR, MOD_BLE, "Failed to send key press; rc=%d\n", rc);
         return;
     }
 
@@ -651,17 +651,47 @@ hid_send_key(const struct hid_keyboard_input *input)
 
     om = ble_hs_mbuf_from_flat(hid_input_report, sizeof(hid_input_report));
     if (!om) {
-        MODLOG_DFLT(ERROR, "Failed to alloc mbuf for key release\n");
+        MODLOG(ERROR, MOD_BLE, "Failed to alloc mbuf for key release\n");
         return;
     }
 
     rc = ble_gatts_notify_custom(ble_conn_handle, hid_input_report_handle, om);
     if (rc != 0) {
-        MODLOG_DFLT(ERROR, "Failed to send key release; rc=%d\n", rc);
+        MODLOG(ERROR, MOD_BLE, "Failed to send key release; rc=%d\n", rc);
     }
 }
 
 /* ---- CTS GATT client ---- */
+
+static int
+cts_lti_read_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
+                struct ble_gatt_attr *attr, void *arg)
+{
+    uint8_t buf[2];
+    uint16_t len = 0;
+
+    if (error->status != 0) {
+        MODLOG(WARN, MOD_BLE, "CTS Local Time Info read error; status=%d\n", error->status);
+        cts_local_time_info.time_zone = 0;
+        cts_local_time_info.dst_offset = 0;
+    } else if (OS_MBUF_PKTLEN(attr->om) < 2) {
+        MODLOG(WARN, MOD_BLE, "CTS LTI: short response (%d B)\n",
+                    OS_MBUF_PKTLEN(attr->om));
+        cts_local_time_info.time_zone = 0;
+        cts_local_time_info.dst_offset = 0;
+    } else {
+        ble_hs_mbuf_to_flat(attr->om, buf, sizeof(buf), &len);
+        cts_local_time_info.time_zone = (int8_t)buf[0];
+        cts_local_time_info.dst_offset = buf[1];
+    }
+
+
+    /* All reads complete, post response event */
+    if (!cts_resp_event.ev_queued) {
+        os_eventq_put(os_eventq_dflt_get(), &cts_resp_event);
+    }
+    return 0;
+}
 
 static int
 cts_read_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
@@ -672,19 +702,29 @@ cts_read_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
     uint16_t year;
 
     if (error->status != 0) {
-        MODLOG_DFLT(ERROR, "CTS read error; status=%d\n", error->status);
+        MODLOG(ERROR, MOD_BLE, "CTS Current Time read error; status=%d\n", error->status);
         return 0;
     }
     if (OS_MBUF_PKTLEN(attr->om) < 7) {
-        MODLOG_DFLT(ERROR, "CTS: short response (%d B)\n",
+        MODLOG(ERROR, MOD_BLE, "CTS: short response (%d B)\n",
                     OS_MBUF_PKTLEN(attr->om));
         return 0;
     }
 
     ble_hs_mbuf_to_flat(attr->om, buf, sizeof(buf), &len);
     year = (uint16_t)(buf[0] | ((uint16_t)buf[1] << 8));
-    MODLOG_DFLT(INFO, "Current time: %04u-%02u-%02u %02u:%02u:%02u\n",
-                year, buf[2], buf[3], buf[4], buf[5], buf[6]);
+
+    cts_date_time.unit.year = year - 2020; /* Watch year is offset from 2020 */
+    cts_date_time.unit.month = buf[2];
+    cts_date_time.unit.day = buf[3];
+    cts_date_time.unit.hour = buf[4];
+    cts_date_time.unit.minute = buf[5];
+    cts_date_time.unit.second = buf[6];
+
+    /* Post event for current time read completion */
+    if (!cts_current_time_event.ev_queued) {
+        os_eventq_put(os_eventq_dflt_get(), &cts_current_time_event);
+    }
     return 0;
 }
 
@@ -692,20 +732,27 @@ static int
 cts_chr_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
                 const struct ble_gatt_chr *chr, void *arg)
 {
+    uint16_t uuid16;
+
     if (error->status == BLE_HS_EDONE) {
-        if (cts_chr_handle == 0) {
-            MODLOG_DFLT(INFO, "CTS: current time chr not found\n");
+        /* Discovery complete */
+        if (cts_chr_handle == 0 && lti_chr_handle == 0) {
+            MODLOG(WARN, MOD_BLE, "CTS: no characteristics found\n");
         }
         return 0;
     }
     if (error->status != 0) {
-        MODLOG_DFLT(ERROR, "CTS chr disc error; status=%d\n", error->status);
+        MODLOG(ERROR, MOD_BLE, "CTS chr disc error; status=%d\n", error->status);
         return 0;
     }
 
-    cts_chr_handle = chr->val_handle;
-    MODLOG_DFLT(INFO, "CTS chr found; handle=%d — reading\n", cts_chr_handle);
-    ble_gattc_read(conn_handle, cts_chr_handle, cts_read_cb, NULL);
+    /* Store handle based on characteristic UUID */
+    uuid16 = ble_uuid_u16((const ble_uuid_t *)&chr->uuid);
+    if (uuid16 == 0x2A2B) {
+        cts_chr_handle = chr->val_handle;
+    } else if (uuid16 == 0x2A0F) {
+        lti_chr_handle = chr->val_handle;
+    }
     return 0;
 }
 
@@ -713,30 +760,66 @@ static int
 cts_svc_disc_cb(uint16_t conn_handle, const struct ble_gatt_error *error,
                 const struct ble_gatt_svc *svc, void *arg)
 {
+    int rc;
+
     if (error->status == BLE_HS_EDONE) {
         return 0;
     }
     if (error->status != 0) {
-        MODLOG_DFLT(ERROR, "CTS svc disc error; status=%d\n", error->status);
+        MODLOG(ERROR, MOD_BLE, "CTS svc disc error; status=%d\n", error->status);
         return 0;
     }
 
-    MODLOG_DFLT(INFO, "CTS svc found; start=%d end=%d\n",
-                svc->start_handle, svc->end_handle);
-    ble_gattc_disc_chrs_by_uuid(conn_handle,
+    /* Discover all characteristics in the CTS service */
+    rc = ble_gattc_disc_all_chrs(conn_handle,
                                  svc->start_handle, svc->end_handle,
-                                 &cts_chr_uuid.u,
                                  cts_chr_disc_cb, NULL);
+    if (rc != 0) {
+        MODLOG(ERROR, MOD_BLE, "Failed to discover CTS characteristics; rc=%d\n", rc);
+    }
     return 0;
 }
 
+/**
+ * Initiate discovery of CTS service and its characteristics.
+ * Found characteristics handles are stored in cts_chr_handle and lti_chr_handle.
+ */
 static void
 cts_discover(uint16_t conn_handle)
 {
     cts_chr_handle = 0;
-    MODLOG_DFLT(INFO, "Starting CTS discovery\n");
+    lti_chr_handle = 0;
     ble_gattc_disc_svc_by_uuid(conn_handle, &cts_svc_uuid.u,
                                 cts_svc_disc_cb, NULL);
+}
+
+/**
+ * Get current time and timezone info from the CTS service.
+ * Reads both the Current Time and Local Time Information characteristics if available.
+ * The results are sent via UART when all reads complete.
+ *
+ * @param conn_handle: BLE connection handle
+ * @return 0 on success, -1 if read is already in flight or characteristics not discovered
+ */
+static int
+get_current_time(uint16_t conn_handle)
+{
+    int rc;
+
+    if (cts_chr_handle == 0) {
+        MODLOG(WARN, MOD_BLE, "CTS Current Time characteristic not discovered\n");
+        return -1;
+    }
+
+    cts_read_conn_handle = conn_handle;
+    rc = ble_gattc_read(conn_handle, cts_chr_handle, cts_read_cb, NULL);
+
+    if (rc != 0) {
+        MODLOG(ERROR, MOD_BLE, "Failed to read CTS Current Time; rc=%d\n", rc);
+        return rc;
+    }
+
+    return 0;
 }
 
 static int
@@ -744,34 +827,40 @@ gap_event(struct ble_gap_event *event, void *arg)
 {
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
-        MODLOG_DFLT(INFO, "Connection %s; status=%d\n",
-                    event->connect.status == 0 ? "established" : "failed",
-                    event->connect.status);
         if (event->connect.status == 0) {
             ble_conn_handle = event->connect.conn_handle;
             /* Initiate security (pairing/bonding) so the link gets encrypted.
              * HID hosts require an encrypted link to accept input reports. */
-            int sec_rc = ble_gap_security_initiate(event->connect.conn_handle);
-            MODLOG_DFLT(INFO, "Security initiate rc=%d\n", sec_rc);
+            ble_gap_security_initiate(event->connect.conn_handle);
         } else {
             ble_advertise();
         }
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        MODLOG_DFLT(INFO, "Disconnect; reason=%d\n",
+        MODLOG(DEBUG, MOD_BLE, "Disconnect; reason=%d\n",
                     event->disconnect.reason);
         ble_conn_handle = BLE_HS_CONN_HANDLE_NONE;
         hid_notify_enabled = 0;
         cts_chr_handle = 0;
+        lti_chr_handle = 0;
+        cts_read_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+        cts_local_time_info.time_zone = 0;
+        cts_local_time_info.dst_offset = 0;
         ble_advertise();
         return 0;
 
     case BLE_GAP_EVENT_ENC_CHANGE:
-        MODLOG_DFLT(INFO, "Encryption change; status=%d\n",
+        MODLOG(DEBUG, MOD_BLE, "Encryption change; status=%d\n",
                     event->enc_change.status);
         if (event->enc_change.status == 0) {
             cts_discover(event->enc_change.conn_handle);
+        } else {
+            /* Encryption failed — likely a stale bond on the peer after a
+             * reflash.  Clear our bond store so the next connection attempt
+             * starts fresh pairing instead of looping on LTK mismatches. */
+            MODLOG(INFO, MOD_BLE, "Enc failed; clearing bonds for fresh pair\n");
+            ble_store_clear();
         }
         return 0;
 
@@ -780,22 +869,19 @@ gap_event(struct ble_gap_event *event, void *arg)
         struct ble_gap_conn_desc desc;
         ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc);
         ble_store_util_delete_peer(&desc.peer_id_addr);
-        MODLOG_DFLT(INFO, "Repeat pairing; deleted old bond\n");
+        MODLOG(DEBUG, MOD_BLE, "Repeat pairing; deleted old bond\n");
         return BLE_GAP_REPEAT_PAIRING_RETRY;
     }
 
     case BLE_GAP_EVENT_SUBSCRIBE:
         if (event->subscribe.attr_handle == hid_input_report_handle) {
             hid_notify_enabled = event->subscribe.cur_notify;
-            MODLOG_DFLT(INFO, "HID input notify=%d\n", hid_notify_enabled);
-            if (hid_notify_enabled) {
-                MODLOG_DFLT(INFO, "Ready! Type text in RTT console to send as HID keys\n");
-            }
+            MODLOG(DEBUG, MOD_BLE, "HID input notify=%d\n", hid_notify_enabled);
         }
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        MODLOG_DFLT(INFO, "Advertising completed, reason: %d\n",
+        MODLOG(DEBUG, MOD_BLE, "Advertising completed, reason: %d\n",
                     event->adv_complete.reason);
         ble_advertise();
         return 0;
@@ -865,7 +951,7 @@ ble_advertise(void)
     rc = ble_gap_adv_rsp_set_fields(&rsp_fields);
     assert(rc == 0);
 
-    MODLOG_DFLT(INFO, "Starting advertising...\n");
+    MODLOG(DEBUG, MOD_BLE, "Starting advertising...\n");
 
     /* As own address type we use hard-coded value, because we generate
        a static random address and by definition it's random */
@@ -886,45 +972,7 @@ on_sync(void)
 static void
 on_reset(int reason)
 {
-    MODLOG_DFLT(INFO, "Resetting state; reason=%d\n", reason);
-}
-/**
- * Console line input callback.
- * Called when a full line is received over the RTT console.
- * Each character in the line is converted to a HID keycode and sent.
- */
-/* Updated console_input_cb — just posts to hid_eventq, no delays here */
-static void
-console_input_cb(struct os_event *ev)
-{
-    struct console_input *inp;
-    uint8_t keycode, mod;
-    int i;
-
-    if (!ev || !ev->ev_arg) {
-        return;
-    }
-
-    inp = (struct console_input *)ev->ev_arg;
-
-    MODLOG_DFLT(INFO, "Console input: '%s'\n", inp->line);
-
-    for (i = 0; inp->line[i] != '\0'; i++) {
-        if (ascii_to_hid(inp->line[i], &keycode, &mod) == 0) {
-            struct hid_keyboard_input key = {
-                .modifiers = mod,
-                .keycodes = { keycode }
-            };
-            hid_send_key(&key);
-            os_time_delay(os_time_ms_to_ticks32(20));
-        } else {
-            MODLOG_DFLT(INFO, "Unmapped char: 0x%02x\n",
-                        (unsigned char)inp->line[i]);
-        }
-    }
-
-    /* Return the event to the console so it can be reused */
-    console_line_event_put(ev);
+    MODLOG(DEBUG, MOD_BLE, "Resetting state; reason=%d\n", reason);
 }
 
 /* ISR: parse one incoming byte into the TLV state machine.
@@ -1025,7 +1073,7 @@ uart_dispatch(const struct tlv_frame *f)
 
     case CMD_CLEAR_BONDS:
         ble_store_clear();
-        MODLOG_DFLT(INFO, "Bonds cleared\n");
+        MODLOG(INFO, MOD_MAIN, "Bonds cleared\n");
         break;
 
     case CMD_BLE_CTRL:
@@ -1035,34 +1083,48 @@ uart_dispatch(const struct tlv_frame *f)
                 ble_gap_terminate(ble_conn_handle, BLE_ERR_REM_USER_CONN_TERM);
             }
             ble_gap_adv_stop();
-            MODLOG_DFLT(INFO, "BLE off\n");
+            MODLOG(INFO, MOD_MAIN, "BLE off\n");
         } else {
             /* BLE on: (re)start advertising */
             ble_advertise();
-            MODLOG_DFLT(INFO, "BLE on\n");
+            MODLOG(INFO, MOD_MAIN, "BLE on\n");
         }
         break;
 
     case CMD_GET_TIME:
         if (ble_conn_handle == BLE_HS_CONN_HANDLE_NONE) {
-            MODLOG_DFLT(INFO, "GET_TIME: not connected\n");
+            MODLOG(INFO, MOD_MAIN, "GET_TIME: not connected\n");
         } else if (cts_chr_handle == 0) {
-            MODLOG_DFLT(INFO, "GET_TIME: CTS not discovered, retrying\n");
+            MODLOG(INFO, MOD_MAIN, "GET_TIME: CTS not discovered, discovering now\n");
             cts_discover(ble_conn_handle);
         } else {
-            ble_gattc_read(ble_conn_handle, cts_chr_handle, cts_read_cb, NULL);
+            int rc = get_current_time(ble_conn_handle);
+            if (rc != 0) {
+                MODLOG(ERROR, MOD_MAIN, "GET_TIME: read failed; rc=%d\n", rc);
+            }
         }
         break;
 
     case CMD_PING: {
         static const uint8_t ack[] = { CMD_PING, 0x01, 0xAC };
         uart_tx_send(ack, sizeof(ack));
-        MODLOG_DFLT(INFO, "UART ping OK\n");
+        MODLOG(INFO, MOD_MAIN, "UART ping OK\n");
+        break;
+    }
+
+    case CMD_ECHO: {
+        uint8_t echo_len = (f->length > 4) ? 4 : f->length;
+        uint8_t resp[6];          /* type + length + up to 4 value bytes */
+        resp[0] = CMD_ECHO;
+        resp[1] = echo_len;
+        memcpy(&resp[2], f->value, echo_len);
+        uart_tx_send(resp, 2 + echo_len);
+        MODLOG(INFO, MOD_MAIN, "UART echo: %d bytes\n", echo_len);
         break;
     }
 
     default:
-        MODLOG_DFLT(INFO, "UART: unknown cmd 0x%02x\n", f->type);
+        MODLOG(INFO, MOD_MAIN, "UART: unknown cmd 0x%02x\n", f->type);
         break;
     }
 }
@@ -1078,10 +1140,68 @@ uart_rx_event_cb(struct os_event *ev)
 }
 
 static void
+cts_current_time_event_cb(struct os_event *ev)
+{
+    int rc;
+
+    /* Current time read completed, check if we should read Local Time Info */
+    if (lti_chr_handle != 0) {
+        rc = ble_gattc_read(cts_read_conn_handle, lti_chr_handle, cts_lti_read_cb, NULL);
+        if (rc != 0) {
+            MODLOG(ERROR, MOD_BLE, "Failed to read Local Time Info; rc=%d\n", rc);
+            cts_local_time_info.time_zone = 0;
+            cts_local_time_info.dst_offset = 0;
+            if (!cts_resp_event.ev_queued) {
+                os_eventq_put(os_eventq_dflt_get(), &cts_resp_event);
+            }
+        }
+    } else {
+        /* No Local Time Info available, send response immediately */
+        cts_local_time_info.time_zone = 0;
+        cts_local_time_info.dst_offset = 0;
+        if (!cts_resp_event.ev_queued) {
+            os_eventq_put(os_eventq_dflt_get(), &cts_resp_event);
+        }
+    }
+}
+
+static void
+cts_resp_event_cb(struct os_event *ev)
+{
+    /* Response format:
+     *   Byte 0: CMD_GET_TIME
+     *   Byte 1: Length (6 = time + timezone info)
+     *   Bytes 2-5: watch_date_time.reg (little-endian)
+     *   Bytes 6-7: Time zone offset in minutes (int16_t, little-endian)
+     */
+    int16_t tz_minutes = (int16_t)cts_local_time_info.time_zone * 15;
+    uint8_t resp[8] = {
+        CMD_GET_TIME, 0x06,
+        (uint8_t)(cts_date_time.reg),
+        (uint8_t)(cts_date_time.reg >> 8),
+        (uint8_t)(cts_date_time.reg >> 16),
+        (uint8_t)(cts_date_time.reg >> 24),
+        (uint8_t)(tz_minutes & 0xFF),
+        (uint8_t)((tz_minutes >> 8) & 0xFF),
+    };
+    uart_tx_send(resp, sizeof(resp));
+    MODLOG(INFO, MOD_MAIN, "CTS time: %04u-%02u-%02u %02u:%02u:%02u TZ=%d min\n",
+           cts_date_time.unit.year + 2020,
+           cts_date_time.unit.month,
+           cts_date_time.unit.day,
+           cts_date_time.unit.hour,
+           cts_date_time.unit.minute,
+           cts_date_time.unit.second,
+           tz_minutes);
+    MODLOG(INFO, MOD_MAIN, "Sending response: [%02X][%02X][%02X][%02X][%02X][%02X][%02X][%02X]\n",
+           resp[0], resp[1], resp[2], resp[3], resp[4], resp[5], resp[6], resp[7]);
+}
+
+static void
 uart_init(void)
 {
     struct uart_conf uc = {
-        .uc_speed    = 115200,
+        .uc_speed    = 9600,
         .uc_databits = 8,
         .uc_stopbits = 1,
         .uc_parity   = UART_PARITY_NONE,
@@ -1090,12 +1210,14 @@ uart_init(void)
         .uc_rx_char  = uart_rx_char_cb,
     };
 
-    uart_rx_event.ev_cb = uart_rx_event_cb;
+    uart_rx_event.ev_cb           = uart_rx_event_cb;
+    cts_current_time_event.ev_cb   = cts_current_time_event_cb;
+    cts_resp_event.ev_cb           = cts_resp_event_cb;
 
     uart_dev = (struct uart_dev *)os_dev_open("uart0", OS_TIMEOUT_NEVER, &uc);
     assert(uart_dev != NULL);
 
-    MODLOG_DFLT(INFO, "UART TLV receiver ready (115200 8N1)\n");
+    MODLOG(INFO, MOD_MAIN, "UART TLV receiver ready (115200 8N1)\n");
 }
 
 int
@@ -1106,22 +1228,19 @@ main(int argc, char **argv)
     /* Initialize all packages. */
     sysinit();
 
-    MODLOG_DFLT(INFO, "BLE HID keyboard demo\n");
+    /* Configure per-module log levels. */
+    modlog_register(MOD_BLE,  log_console_get(), LOG_LEVEL_DEBUG, NULL);
+    modlog_register(MOD_MAIN, log_console_get(), LOG_LEVEL_INFO,  NULL);
+
+    MODLOG(INFO, MOD_MAIN, "BLE HID keyboard demo\n");
 
     /* Clear any stale bonds from previous failed pairing attempts */
-    ble_store_clear();
-    MODLOG_DFLT(INFO, "Cleared bond store\n");
-
-    /* Set up console input over RTT */
-    console_event.ev_cb = console_input_cb;
-    console_event.ev_arg = &console_buf;
-    console_line_queue_set(os_eventq_dflt_get());
-    console_line_event_put(&console_event);
-    MODLOG_DFLT(INFO, "Console input ready (type text + Enter in RTT)\n");
+    // ble_store_clear();
+    // MODLOG(DEBUG, MOD_MAIN, "Cleared bond store\n");
 
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
-    ble_hs_cfg.gatts_register_cb = gatt_svr_register_cb;
+    ble_hs_cfg.gatts_register_cb = NULL;
     ble_hs_cfg.store_status_cb = ble_store_util_status_rr;
 
     /* Security Manager configuration for HID bonding */
